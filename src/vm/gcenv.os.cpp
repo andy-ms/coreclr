@@ -573,13 +573,23 @@ static size_t GetRestrictedPhysicalMemoryLimit()
 // Get the physical memory that this process can use.
 // Return:
 //  non zero if it has succeeded, 0 if it has failed
-uint64_t GCToOSInterface::GetPhysicalMemoryLimit()
+//
+// PERF TODO: Right now I am handling restricted case specially but we'll want
+// to apply the tuning universarily which will require more testing.
+uint64_t GCToOSInterface::GetPhysicalMemoryLimit(bool* is_restricted)
 {
     LIMITED_METHOD_CONTRACT;
 
+    if (is_restricted)
+        *is_restricted = false;
+
     size_t restricted_limit = GetRestrictedPhysicalMemoryLimit();
     if (restricted_limit != 0)
+    {
+        if (is_restricted)
+            *is_restricted = true;
         return restricted_limit;
+    }
 
     MEMORYSTATUSEX memStatus;
     ::GetProcessMemoryLoad(&memStatus);
@@ -595,6 +605,11 @@ uint64_t GCToOSInterface::GetPhysicalMemoryLimit()
 //  available_page_file - The maximum amount of memory the current process can commit, in bytes.
 // Remarks:
 //  Any parameter can be null.
+//
+// 
+// TEMP!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+// I temporarily return commit for the last parameter!!!
+// TEMP!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 void GCToOSInterface::GetMemoryStatus(uint32_t* memory_load, uint64_t* available_physical, uint64_t* available_page_file)
 {
     LIMITED_METHOD_CONTRACT;
@@ -609,6 +624,11 @@ void GCToOSInterface::GetMemoryStatus(uint32_t* memory_load, uint64_t* available
         {
             PROCESS_MEMORY_COUNTERS pmc;
             status = GCGetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc));
+            //printf ("current commit size is %Id bytes, ws is %Id\n", pmc.PagefileUsage, pmc.WorkingSetSize);
+            if (available_page_file)
+            {
+                *available_page_file = pmc.PagefileUsage;
+            }
             workingSetSize = pmc.WorkingSetSize;
         }
 #else
@@ -628,8 +648,11 @@ void GCToOSInterface::GetMemoryStatus(uint32_t* memory_load, uint64_t* available
             // Available page file doesn't mean much when physical memory is restricted since
             // we don't know how much of it is available to this process so we are not going to 
             // bother to make another OS call for it.
-            if (available_page_file)
-                *available_page_file = 0;
+            // TEMP!!!!!!!!!!!!!
+            // temporarily commented out
+            // TEMP!!!!!!!!!!!!!
+            //if (available_page_file)
+            //    *available_page_file = 0;
 
             return;
         }

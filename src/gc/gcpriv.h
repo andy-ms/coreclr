@@ -133,8 +133,8 @@ inline void FATAL_GC_ERROR()
 
 //#define STRESS_PINNING    //Stress pinning by pinning randomly
 
-//#define TRACE_GC          //debug trace gc operation
-//#define SIMPLE_DPRINTF
+#define TRACE_GC          //debug trace gc operation
+#define SIMPLE_DPRINTF
 
 //#define TIME_GC           //time allocation and garbage collection
 //#define TIME_WRITE_WATCH  //time GetWriteWatch and ResetWriteWatch calls
@@ -402,11 +402,12 @@ enum gc_latency_level
 
 enum gc_tuning_point
 {
-    tuning_deciding_condemned_gen,
-    tuning_deciding_full_gc,
-    tuning_deciding_compaction,
-    tuning_deciding_expansion,
-    tuning_deciding_promote_ephemeral
+    tuning_deciding_condemned_gen = 0,
+    tuning_deciding_full_gc = 1,
+    tuning_deciding_compaction = 2,
+    tuning_deciding_expansion = 3,
+    tuning_deciding_promote_ephemeral = 4,
+    tuning_deciding_short_on_seg = 5
 };
 
 #if defined(TRACE_GC) && defined(BACKGROUND_GC)
@@ -1202,6 +1203,11 @@ public:
     static
     void shutdown_gc();
 
+    // If the hard limit is specified, take that into consideration
+    // and this means it may modify the # of heaps.
+    PER_HEAP_ISOLATED
+    size_t get_segment_size_hard_limit (uint32_t* num_heaps);
+
     PER_HEAP
     CObjectHeader* allocate (size_t jsize,
                              alloc_context* acontext);
@@ -1213,8 +1219,6 @@ public:
     static
     void gc_thread_stub (void* arg);
 #endif //MULTIPLE_HEAPS
-
-    CObjectHeader* try_fast_alloc (size_t jsize);
 
     // For LOH allocations we only update the alloc_bytes_loh in allocation
     // context - we don't actually use the ptr/limit from it so I am
@@ -1655,6 +1659,12 @@ protected:
     void decommit_heap_segment_pages (heap_segment* seg, size_t extra_space);
     PER_HEAP
     void decommit_heap_segment (heap_segment* seg);
+    PER_HEAP_ISOLATED
+    bool virtual_alloc_commit_for_heap (void* addr, size_t size, int h_number);
+    PER_HEAP_ISOLATED
+    bool virtual_commit (void* address, size_t size, int h_number=-1, bool* hard_limit_exceeded_p=NULL);
+    PER_HEAP_ISOLATED
+    bool virtual_decommit (void* address, size_t size, int h_number=-1);
     PER_HEAP
     void clear_gen0_bricks();
 #ifdef BACKGROUND_GC
@@ -1749,7 +1759,7 @@ protected:
     BOOL find_card (uint32_t* card_table, size_t& card,
                     size_t card_word_end, size_t& end_card);
     PER_HEAP
-    BOOL grow_heap_segment (heap_segment* seg, uint8_t* high_address);
+    BOOL grow_heap_segment (heap_segment* seg, uint8_t* high_address, bool* hard_limit_exceeded_p=NULL);
     PER_HEAP
     int grow_heap_segment (heap_segment* seg, uint8_t* high_address, uint8_t* old_loc, size_t size, BOOL pad_front_p REQD_ALIGN_AND_OFFSET_DCL);
     PER_HEAP
@@ -2489,6 +2499,9 @@ protected:
     PER_HEAP
     void save_ephemeral_generation_starts();
 
+    PER_HEAP_ISOLATED
+    size_t get_gen0_min_size();
+
     PER_HEAP
     void set_static_data();
 
@@ -2523,7 +2536,10 @@ protected:
     size_t get_total_committed_size();
     PER_HEAP_ISOLATED
     size_t get_total_fragmentation();
-
+    PER_HEAP_ISOLATED
+    size_t get_total_gen_fragmentation (int gen_number);
+    PER_HEAP_ISOLATED
+    size_t get_total_gen_estimated_reclaim (int gen_number);
     PER_HEAP_ISOLATED
     void get_memory_info (uint32_t* memory_load, 
                           uint64_t* available_physical=NULL,
@@ -2532,6 +2548,9 @@ protected:
     size_t generation_size (int gen_number);
     PER_HEAP_ISOLATED
     size_t get_total_survived_size();
+    // this also resets allocated_since_last_gc
+    PER_HEAP_ISOLATED
+    size_t get_total_allocated_since_last_gc();
     PER_HEAP
     size_t get_current_allocated();
     PER_HEAP_ISOLATED
@@ -2563,9 +2582,15 @@ protected:
     PER_HEAP
     size_t end_space_after_gc();
     PER_HEAP
+    size_t estimated_reclaim (int gen_number);
+    PER_HEAP
     BOOL decide_on_compacting (int condemned_gen_number,
                                size_t fragmentation,
                                BOOL& should_expand);
+    PER_HEAP
+    BOOL sufficient_space_end_seg (uint8_t* start, uint8_t* seg_end, 
+                                   size_t end_space_required, 
+                                   gc_tuning_point tp);
     PER_HEAP
     BOOL ephemeral_gen_fit_p (gc_tuning_point tp);
     PER_HEAP
@@ -3035,6 +3060,68 @@ public:
 
     PER_HEAP_ISOLATED
     uint64_t entry_available_physical_mem;
+
+    // Hard limit for the heap -
+    // 
+    // Users can specify a hard limit for the GC heap via GCHeapHardLimit.
+    // This is the maximum commit size the GC heap can consume.
+    //
+    // This is often used for container scenarios (but not limited to). Due
+    // to the different perf charicteristics of containers we make the 
+    // following policy changes:
+    // 
+    // 1) No longer affinitize the process by default because we wouldn't 
+    // want all the containers on the machine to only affinitize to use the
+    // first few CPUs (and we don't know which CPUs are already used). You
+    // can however override this by the GCNoAffinitize and GCHeapAffinitizeMask
+    // configs. 
+    // 
+    // 2) Segment size is determined by limit / number of heaps but has a 
+    // minimum value of 16mb. This can be changed by specifying the number
+    // of heaps via the GCHeapCount config.
+    //
+    // 3) LOH compaction occurs automatically if needed.
+    //
+    // Since we do allow both gen0 and gen3 allocations, and we don't know 
+    // the distinction (and it's unrealistic to request users to specify
+    // this distribution) we reserve this much space in each segment for 
+    // both so we do reserve double the size. This means the following -
+    // 
+    // + we never acquire new segments. This simplies the perf
+    // calculations by a lot.
+    //
+    // + we now need a different definition of "end of seg" because we
+    // need to make sure the total does not exceed the limit.
+    //
+    // + if we detect that we exceed the commit limit in the allocator we
+    // wouldn't want to treat that as a normal commit failure because that
+    // would mean we always do full compacting GCs.
+    // 
+    // + for Server GC we want to and make sure the segment size is not too 
+    // small (it's at least min_segment_size_hard_limit). This is to avoid 
+    // the scenario where the hard limit is small but the process can use 
+    // many procs and we end up with tiny segments that don't make sense.
+    //
+    // Note that due to the different performance characteritics 
+    // TODO: some of the logic here applies to the general case as well
+    // such as the LOH heap balancing and automatic compaction. It will 
+    // require more testing to change the general case.
+    PER_HEAP_ISOLATED
+    size_t heap_hard_limit;
+
+    PER_HEAP_ISOLATED
+    CLRCriticalSection check_commit_cs;
+
+    PER_HEAP_ISOLATED
+    size_t current_total_committed;
+
+    // This is what GC uses for its own bookkeeping.
+    PER_HEAP_ISOLATED
+    size_t current_total_committed_bookkeeping;
+
+    // This is what GC's own book keeping consumes.
+    PER_HEAP_ISOLATED
+    size_t current_total_committed_gc_own;
 
     PER_HEAP_ISOLATED
     size_t last_gc_index;
@@ -3617,6 +3704,9 @@ protected:
 
     PER_HEAP_ISOLATED
     size_t num_provisional_triggered;
+
+    PER_HEAP
+    size_t allocated_since_last_gc;
 
 #ifdef BACKGROUND_GC
     PER_HEAP_ISOLATED

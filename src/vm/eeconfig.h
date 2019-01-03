@@ -618,6 +618,7 @@ public:
     int     GetGCHeapCount()                const {LIMITED_METHOD_CONTRACT; return iGCHeapCount;}
     int     GetGCNoAffinitize ()            const {LIMITED_METHOD_CONTRACT; return iGCNoAffinitize;}
     size_t  GetGCAffinityMask()             const {LIMITED_METHOD_CONTRACT; return iGCAffinityMask;}
+    size_t  GetGCHeapHardLimit()            const {LIMITED_METHOD_CONTRACT; return iGCHeapHardLimit;}
 
 #ifdef GCTRIMCOMMIT
 
@@ -925,6 +926,7 @@ private: //----------------------------------------------------------------
     int  iGCHeapCount;
     int  iGCNoAffinitize;
     size_t  iGCAffinityMask;
+    size_t iGCHeapHardLimit;
 
 #ifdef GCTRIMCOMMIT
 

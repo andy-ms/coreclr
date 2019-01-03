@@ -946,11 +946,19 @@ size_t GCToOSInterface::GetVirtualMemoryLimit()
 // Remarks:
 //  If a process runs with a restricted memory limit, it returns the limit. If there's no limit 
 //  specified, it returns amount of actual physical memory.
-uint64_t GCToOSInterface::GetPhysicalMemoryLimit()
+uint64_t GCToOSInterface::GetPhysicalMemoryLimit(bool* is_restricted)
 {
+    if (is_restricted)
+        *is_restricted = false;
+
     size_t restricted_limit = GetRestrictedPhysicalMemoryLimit();
     if (restricted_limit != 0)
+    {
+        if (is_restricted)
+            *is_restricted = true;
+
         return restricted_limit;
+    }
 
     MEMORYSTATUSEX memStatus;
     GetProcessMemoryLoad(&memStatus);

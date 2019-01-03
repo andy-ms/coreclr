@@ -200,6 +200,7 @@ HRESULT EEConfig::Init()
     iGCHeapCount = 0;
     iGCNoAffinitize = 0;
     iGCAffinityMask = 0;
+    iGCHeapHardLimit = 0;
 
 #ifdef GCTRIMCOMMIT
     iGCTrimCommit = 0;
@@ -826,11 +827,13 @@ HRESULT EEConfig::sync()
 #ifdef _WIN64
     iGCAffinityMask = GetConfigULONGLONG_DontUse_(CLRConfig::EXTERNAL_GCHeapAffinitizeMask, iGCAffinityMask);
     if (!iGCAffinityMask) iGCAffinityMask =  Configuration::GetKnobULONGLONGValue(W("System.GC.HeapAffinitizeMask"));
+    iGCHeapHardLimit = GetConfigULONGLONG_DontUse_(CLRConfig::EXTERNAL_GCHeapHardLimit, iGCHeapHardLimit);
     if (!iGCSegmentSize) iGCSegmentSize =  GetConfigULONGLONG_DontUse_(CLRConfig::UNSUPPORTED_GCSegmentSize, iGCSegmentSize);
     if (!iGCgen0size) iGCgen0size = GetConfigULONGLONG_DontUse_(CLRConfig::UNSUPPORTED_GCgen0size, iGCgen0size);
 #else
     iGCAffinityMask = GetConfigDWORD_DontUse_(CLRConfig::EXTERNAL_GCHeapAffinitizeMask, iGCAffinityMask);
     if (!iGCAffinityMask) iGCAffinityMask = Configuration::GetKnobDWORDValue(W("System.GC.HeapAffinitizeMask"), 0);
+    iGCHeapHardLimit = GetConfigDWORD_DontUse_(CLRConfig::EXTERNAL_GCHeapHardLimit, iGCHeapHardLimit);
     if (!iGCSegmentSize) iGCSegmentSize =  GetConfigDWORD_DontUse_(CLRConfig::UNSUPPORTED_GCSegmentSize, iGCSegmentSize);
     if (!iGCgen0size) iGCgen0size = GetConfigDWORD_DontUse_(CLRConfig::UNSUPPORTED_GCgen0size, iGCgen0size);
 #endif //_WIN64
