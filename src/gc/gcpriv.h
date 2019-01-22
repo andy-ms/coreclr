@@ -432,10 +432,11 @@ enum allocation_state
     a_state_start = 0,
     a_state_can_allocate,
     a_state_cant_allocate,
+    // This could be due to having to wait till a GC is done,
+    // or having to try a different heap.
+    a_state_retry_allocate,
     a_state_try_fit,
     a_state_try_fit_new_seg,
-    a_state_try_fit_new_seg_after_cg,
-    a_state_try_fit_no_seg,
     a_state_try_fit_after_cg,
     a_state_try_fit_after_bgc,
     a_state_try_free_full_seg_in_bgc, 
@@ -1206,7 +1207,10 @@ public:
     // If the hard limit is specified, take that into consideration
     // and this means it may modify the # of heaps.
     PER_HEAP_ISOLATED
-    size_t get_segment_size_hard_limit (uint32_t* num_heaps);
+    size_t get_segment_size_hard_limit (uint32_t* num_heaps, bool should_adjust_num_heaps);
+
+    PER_HEAP_ISOLATED
+    bool should_retry_other_heap (size_t size);
 
     PER_HEAP
     CObjectHeader* allocate (size_t jsize,
@@ -1435,7 +1439,7 @@ protected:
     size_t limit_from_size (size_t size, size_t room, int gen_number,
                             int align_const);
     PER_HEAP
-    int try_allocate_more_space (alloc_context* acontext, size_t jsize,
+    allocation_state try_allocate_more_space (alloc_context* acontext, size_t jsize,
                                  int alloc_generation_number);
     PER_HEAP
     BOOL allocate_more_space (alloc_context* acontext, size_t jsize,
@@ -1565,7 +1569,7 @@ protected:
                       oom_reason* oom_r);
 
     PER_HEAP
-    BOOL allocate_small (int gen_number,
+    allocation_state allocate_small (int gen_number,
                          size_t size, 
                          alloc_context* acontext,
                          int align_const);
@@ -1587,7 +1591,7 @@ protected:
     void add_saved_loh_state (allocation_state loh_state_to_save, EEThreadId thread_id);
 #endif //RECORD_LOH_STATE
     PER_HEAP
-    BOOL allocate_large (int gen_number,
+    allocation_state allocate_large (int gen_number,
                          size_t size, 
                          alloc_context* acontext,
                          int align_const);
@@ -2535,6 +2539,8 @@ protected:
     PER_HEAP_ISOLATED
     size_t get_total_committed_size();
     PER_HEAP_ISOLATED
+    size_t get_total_committed_size (int gen_number, size_t* allocated);
+    PER_HEAP_ISOLATED
     size_t get_total_fragmentation();
     PER_HEAP_ISOLATED
     size_t get_total_gen_fragmentation (int gen_number);
@@ -2577,6 +2583,8 @@ protected:
     size_t generation_sizes (generation* gen);
     PER_HEAP
     size_t committed_size();
+    PER_HEAP
+    size_t committed_size (int gen_number, size_t* allocated);
     PER_HEAP
     size_t approximate_new_allocation();
     PER_HEAP
