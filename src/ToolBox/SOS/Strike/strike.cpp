@@ -9475,35 +9475,39 @@ DECLARE_API (DumpGCLog)
         goto exit;
     }
 
-    int iLogSize = 1024*1024;
-    BYTE* bGCLog = new NOTHROW BYTE[iLogSize];
-    if (bGCLog == NULL)
     {
-        ReportOOM();
-        goto exit;
-    }
-
-    memset (bGCLog, 0, iLogSize);
-    if (!SafeReadMemory(dwAddr, bGCLog, iLogSize, NULL))
-    {
-        ExtOut("failed to read memory from %08x\n", dwAddr);
-    }
-
-    int iRealLogSize = iLogSize - 1;
-    while (iRealLogSize >= 0)
-    {
-        if (bGCLog[iRealLogSize] != '*')
+        int iLogSize = 1024*1024;
+        BYTE* bGCLog = new NOTHROW BYTE[iLogSize];
+        if (bGCLog == NULL)
         {
-            break;
+            ReportOOM();
+            goto exit;
         }
 
-        iRealLogSize--;
+        memset (bGCLog, 0, iLogSize);
+        if (!SafeReadMemory(dwAddr, bGCLog, iLogSize, NULL))
+        {
+            ExtOut("failed to read memory from %08x\n", dwAddr);
+        }
+
+        int iRealLogSize = iLogSize - 1;
+        while (iRealLogSize >= 0)
+        {
+            if (bGCLog[iRealLogSize] != '*')
+            {
+                break;
+            }
+
+            iRealLogSize--;
+        }
+
+        {
+            DWORD dwWritten = 0;
+            WriteFile (hGCLog, bGCLog, iRealLogSize + 1, &dwWritten, NULL);
+        }
+
+        Status = S_OK;
     }
-
-    DWORD dwWritten = 0;
-    WriteFile (hGCLog, bGCLog, iRealLogSize + 1, &dwWritten, NULL);
-
-    Status = S_OK;
 
 exit:
 

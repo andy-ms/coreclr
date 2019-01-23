@@ -449,6 +449,8 @@ if (CLR_CMAKE_PLATFORM_UNIX)
   endif(CLR_CMAKE_WARNINGS_ARE_ERRORS)
 
   # Disabled warnings
+  add_compile_options(-Wno-non-pod-varargs)
+  add_compile_options(-Wno-format)
   add_compile_options(-Wno-unused-private-field)
   add_compile_options(-Wno-unused-variable)
   # Explicit constructor calls are not supported by clang (this->ClassName::ClassName())
