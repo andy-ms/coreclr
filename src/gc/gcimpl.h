@@ -113,7 +113,8 @@ public:
     Object* GetContainingObject(void *pInteriorPtr, bool fCollectedGenOnly);
 
 #ifdef MULTIPLE_HEAPS
-    static void AssignHeap (alloc_context* acontext);
+    static void AssignSOHHeapsIfNecessary (alloc_context* acontext);
+    static void AssignLOHHeapIfNecessary (alloc_context* acontext);
     static GCHeap* GetHeap (int);
 #endif //MULTIPLE_HEAPS
 

@@ -138,9 +138,11 @@ struct gc_alloc_context
     uint8_t*       alloc_limit;
     int64_t        alloc_bytes; //Number of bytes allocated on SOH by this context
     int64_t        alloc_bytes_loh; //Number of bytes allocated on LOH by this context
-    // These two fields are deliberately not exposed past the EE-GC interface.
+    // These fields are deliberately not exposed past the EE-GC interface.
     void*          gc_reserved_1;
     void*          gc_reserved_2;
+    void*          gc_reserved_3;
+    void*          gc_reserved_4;
     int            alloc_count;
 public:
 
@@ -154,6 +156,8 @@ public:
         alloc_bytes_loh = 0;
         gc_reserved_1 = 0;
         gc_reserved_2 = 0;
+        gc_reserved_3 = 0;
+        gc_reserved_4 = 0;
         alloc_count = 0;
     }
 };

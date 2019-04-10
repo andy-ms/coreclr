@@ -210,7 +210,22 @@ void record_global_mechanism (int mech_index);
 struct alloc_context : gc_alloc_context 
 {
 #ifdef FEATURE_SVR_GC
-    inline SVR::GCHeap* get_alloc_heap()
+    inline SVR::GCHeap*& soh_alloc_heap()
+    {
+        return *reinterpret_cast<SVR::GCHeap**>(&gc_reserved_1);
+    }
+
+    inline SVR::GCHeap*& soh_home_heap()
+    {
+        return *reinterpret_cast<SVR::GCHeap**>(&gc_reserved_2);
+    }
+
+    inline SVR::GCHeap*& loh_alloc_heap()
+    {
+        return *reinterpret_cast<SVR::GCHeap**>(&gc_reserved_3);
+    }
+
+    /*inline SVR::GCHeap* get_alloc_heap()
     {
         return static_cast<SVR::GCHeap*>(gc_reserved_1);
     }
@@ -228,7 +243,7 @@ struct alloc_context : gc_alloc_context
     inline void set_home_heap(SVR::GCHeap* heap)
     {
         gc_reserved_2 = heap;
-    }
+    }*/
 #endif // FEATURE_SVR_GC
 };
 

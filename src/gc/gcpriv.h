@@ -1233,11 +1233,17 @@ public:
     void gc_thread_stub (void* arg);
 #endif //MULTIPLE_HEAPS
 
-    // For LOH allocations we only update the alloc_bytes_loh in allocation
+    // For LOH allocations we only update the alloc_bytes_loh and loh_alloc_heap in allocation
     // context - we don't actually use the ptr/limit from it so I am
     // making this explicit by not passing in the alloc_context.
     PER_HEAP
-    CObjectHeader* allocate_large_object (size_t size, int64_t& alloc_bytes);
+    CObjectHeader* allocate_large_object (
+        size_t size,
+        int64_t& alloc_bytes
+#ifdef MULTIPLE_HEAPS
+        , GCHeap*& loh_alloc_heap
+#endif
+    );
 
 #ifdef FEATURE_STRUCTALIGN
     PER_HEAP
