@@ -1225,6 +1225,7 @@ public:
     static void balance_heaps (alloc_context* acontext);
     static 
     gc_heap* balance_heaps_loh (alloc_context* acontext, size_t size);
+    static gc_heap* balance_heaps_loh_hard_limit_retry (alloc_context* acontext, size_t size);
     static
     void gc_thread_stub (void* arg);
 #endif //MULTIPLE_HEAPS
@@ -3011,6 +3012,9 @@ public:
 
     PER_HEAP_ISOLATED
     size_t times_switched_loh_heaps;
+
+    PER_HEAP_ISOLATED
+    size_t times_hit_hard_limit_retry;
 
 #define alloc_quantum_balance_units (16)
 

@@ -2435,6 +2435,7 @@ sorted_table* gc_heap::seg_table;
 GCEvent     gc_heap::ee_suspend_event;
 size_t      gc_heap::min_balance_threshold = 0;
 size_t      gc_heap::times_switched_loh_heaps = 0;
+size_t      gc_heap::times_hit_hard_limit_retry = 0;
 #endif //MULTIPLE_HEAPS
 
 size_t gc_heap::final_loh_desired = 0;
@@ -13596,7 +13597,7 @@ gc_heap* gc_heap::balance_heaps_loh (alloc_context* acontext, size_t alloc_size)
         ptrdiff_t org_size = dd_new_allocation (dd);
         gc_heap* max_hp;
         ptrdiff_t max_size;
-        size_t delta = dd_min_size (dd); //loh_delta == 0 ? dd_min_size (dd) : loh_delta;
+        size_t delta = dd_min_size (dd);
         int start, end, finish;
         heap_select::get_heap_range_for_heap(org_hp->heap_number, &start, &end);
         finish = start + n_heaps;
@@ -13631,7 +13632,7 @@ try_again:
         if ((max_hp == org_hp) && (end < finish))
         {
             start = end; end = finish;
-            delta = dd_min_size (dd);//loh_delta == 0 ? dd_min_size (dd) : loh_delta;
+            delta = dd_min_size (dd);
             goto try_again;
         }
 
@@ -13652,6 +13653,54 @@ try_again:
         return org_hp;
     }
 }
+
+// Unlike balance_heaps_loh, this may return nullptr if we failed to change heaps
+gc_heap* gc_heap::balance_heaps_loh_hard_limit_retry (alloc_context* acontext, size_t alloc_size)
+{
+    gc_heap::times_hit_hard_limit_retry++;
+
+    gc_heap* org_hp = acontext->loh_alloc_heap()->pGenGCHeap;
+    dprintf (LOGME, ("[h%d] balance_heaps_loh_hard_limit_retry alloc_size: %f", org_hp->heap_number, bytes_to_mb(alloc_size)));
+
+    assert (heap_hard_limit);
+
+    int start, end, finish;
+    heap_select::get_heap_range_for_heap (org_hp->heap_number, &start, &end);
+    finish = start + n_heaps;
+
+    gc_heap* max_hp = nullptr;
+    size_t max_end_of_seg_space = alloc_size - 1; // Must be more than this much, or return NULL
+
+try_again:
+    {
+        dprintf (LOGME, ("org hp: [h%d], max_end_of_seg_space: %f",
+            org_hp->heap_number,
+            bytes_to_mb(max_end_of_seg_space)));
+
+        for (int i = start; i < end; i++)
+        {
+            gc_heap* hp = GCHeap::GetHeap (i%n_heaps)->pGenGCHeap;
+            heap_segment* seg = generation_start_segment (hp->generation_of (max_generation + 1));
+            assert (heap_segment_next (seg) == nullptr);
+            size_t end_of_seg_space = heap_segment_reserved (seg) - heap_segment_allocated (seg);
+            // dprintf (LOGME, ("heap %d, end_of_seg_space %d", hp->heap_number, bytes_to_mb(end_of_seg_space)));
+            if (end_of_seg_space > max_end_of_seg_space)
+            {
+                dprintf (LOGME, ("Switching heaps in hard_limit_retry! To: [h%d], New end_of_seg_space: %f", hp->heap_number, bytes_to_mb(end_of_seg_space)));
+                max_end_of_seg_space = end_of_seg_space;
+                max_hp = hp;
+            }
+        }
+    }
+
+    if ((max_hp == nullptr) && (end < finish))
+    {
+        start = end; end = finish;
+        goto try_again;
+    }
+
+    return max_hp;
+}
 #endif //MULTIPLE_HEAPS
 
 BOOL gc_heap::allocate_more_space(alloc_context* acontext, size_t size,
@@ -13668,7 +13717,20 @@ BOOL gc_heap::allocate_more_space(alloc_context* acontext, size_t size,
         }
         else
         {
-            gc_heap* alloc_heap = balance_heaps_loh (acontext, size);
+            gc_heap* alloc_heap;
+            if (heap_hard_limit && status == a_state_retry_allocate)
+            {
+                alloc_heap = balance_heaps_loh_hard_limit_retry (acontext, size);
+                if (alloc_heap == nullptr)
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                alloc_heap = balance_heaps_loh (acontext, size);
+            }
+
             status = alloc_heap->try_allocate_more_space (acontext, size, alloc_generation_number);
             if (status == a_state_retry_allocate)
             {
@@ -14706,9 +14768,14 @@ int gc_heap::joined_generation_to_condemn (BOOL should_evaluate_elevation,
             current_total_committed, (int)((float)current_total_committed * 100.0 / (float)heap_hard_limit),
             heap_hard_limit));
 
-        if ((current_total_committed * 10) >= (heap_hard_limit * 9))
+        bool full_compact_gc_p = false;
+
+        if (joined_last_gc_before_oom)
         {
-            bool full_compact_gc_p = false;
+            full_compact_gc_p = true;
+        }
+        else if ((current_total_committed * 10) >= (heap_hard_limit * 9))
+        {
             size_t loh_frag = get_total_gen_fragmentation (max_generation + 1);
             
             // If the LOH frag is >= 1/8 it's worth compacting it
@@ -14725,14 +14792,14 @@ int gc_heap::joined_generation_to_condemn (BOOL should_evaluate_elevation,
                 full_compact_gc_p = ((est_loh_reclaim * 8) >= heap_hard_limit);
                 dprintf (GTC_LOG, ("loh est reclaim: %Id, 1/8 of limit %Id", est_loh_reclaim, (heap_hard_limit / 8)));
             }
+        }
 
-            if (full_compact_gc_p)
-            {
-                n = max_generation;
-                *blocking_collection_p = TRUE;
-                settings.loh_compaction = TRUE;
-                dprintf (GTC_LOG, ("compacting LOH due to hard limit"));
-            }
+        if (full_compact_gc_p)
+        {
+            n = max_generation;
+            *blocking_collection_p = TRUE;
+            settings.loh_compaction = TRUE;
+            dprintf (GTC_LOG, ("compacting LOH due to hard limit"));
         }
     }
 
@@ -16880,7 +16947,7 @@ void gc_heap::garbage_collect (int n)
         GCCreateSegment_V1,
         /*was 'address'*/ reinterpret_cast<void*>(gc_heap::final_loh_desired),
         /*was 'size'*/ gc_heap::times_switched_loh_heaps,
-        /*was 'type', an enum */ 1337);
+        /*was 'type', an enum */ static_cast<uint32_t>(gc_heap::times_hit_hard_limit_retry));
 #endif
 
     //reset the number of alloc contexts
