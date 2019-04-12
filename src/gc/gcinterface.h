@@ -142,6 +142,7 @@ struct gc_alloc_context
     void*          gc_reserved_1;
     void*          gc_reserved_2;
     void*          gc_reserved_3;
+    void*          gc_reserved_4;
     int            alloc_count;
 public:
 
@@ -156,6 +157,7 @@ public:
         gc_reserved_1 = 0;
         gc_reserved_2 = 0;
         gc_reserved_3 = 0;
+        gc_reserved_4 = 0;
         alloc_count = 0;
     }
 };

@@ -114,7 +114,7 @@ public:
 
 #ifdef MULTIPLE_HEAPS
     static void AssignHeap (alloc_context* acontext);
-    static void AssignLOHHeap (alloc_context* acontext);
+    static void AssignLOHHeapIfNecessary (alloc_context* acontext);
     static GCHeap* GetHeap (int);
 #endif //MULTIPLE_HEAPS
 

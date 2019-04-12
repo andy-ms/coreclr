@@ -506,7 +506,7 @@ size_t max_gc_buffers = 0;
 static CLRCriticalSection gc_log_lock;
 
 // we keep this much in a buffer and only flush when the buffer is full
-#define gc_log_buffer_size (4*1024)
+#define gc_log_buffer_size (1024*1024)
 uint8_t* gc_log_buffer = 0;
 size_t gc_log_buffer_offset = 0;
 
@@ -2531,7 +2531,7 @@ uint64_t    gc_heap::entry_available_physical_mem = 0;
 
 size_t      gc_heap::heap_hard_limit = 0;
 
-size_t      gc_heap::loh_delta       = 0;
+//size_t      gc_heap::loh_delta       = 0;
 
 #ifdef BACKGROUND_GC
 GCEvent     gc_heap::bgc_start_event;
@@ -13596,7 +13596,7 @@ gc_heap* gc_heap::balance_heaps_loh (alloc_context* acontext, size_t alloc_size)
         ptrdiff_t org_size = dd_new_allocation (dd);
         gc_heap* max_hp;
         ptrdiff_t max_size;
-        size_t delta = loh_delta == 0 ? dd_min_size (dd) : loh_delta;
+        size_t delta = dd_min_size (dd); //loh_delta == 0 ? dd_min_size (dd) : loh_delta;
         int start, end, finish;
         heap_select::get_heap_range_for_heap(org_hp->heap_number, &start, &end);
         finish = start + n_heaps;
@@ -13631,7 +13631,7 @@ try_again:
         if ((max_hp == org_hp) && (end < finish))
         {
             start = end; end = finish;
-            delta = loh_delta == 0 ? dd_min_size (dd) : loh_delta;
+            delta = dd_min_size (dd);//loh_delta == 0 ? dd_min_size (dd) : loh_delta;
             goto try_again;
         }
 
@@ -14705,15 +14705,10 @@ int gc_heap::joined_generation_to_condemn (BOOL should_evaluate_elevation,
         dprintf (GTC_LOG, ("committed %Id is %d%% of limit %Id", 
             current_total_committed, (int)((float)current_total_committed * 100.0 / (float)heap_hard_limit),
             heap_hard_limit));
-            
-        bool full_compact_gc_p = false;
 
-        //if (joined_last_gc_before_oom)
-        //{
-        //    full_compact_gc_p = true;
-        //}
-        /*else*/ if ((current_total_committed * 10) >= (heap_hard_limit * 9))
+        if ((current_total_committed * 10) >= (heap_hard_limit * 9))
         {
+            bool full_compact_gc_p = false;
             size_t loh_frag = get_total_gen_fragmentation (max_generation + 1);
             
             // If the LOH frag is >= 1/8 it's worth compacting it
@@ -14730,14 +14725,14 @@ int gc_heap::joined_generation_to_condemn (BOOL should_evaluate_elevation,
                 full_compact_gc_p = ((est_loh_reclaim * 8) >= heap_hard_limit);
                 dprintf (GTC_LOG, ("loh est reclaim: %Id, 1/8 of limit %Id", est_loh_reclaim, (heap_hard_limit / 8)));
             }
-        }
 
-        if (full_compact_gc_p)
-        {
-            n = max_generation;
-            *blocking_collection_p = TRUE;
-            settings.loh_compaction = TRUE;
-            dprintf (GTC_LOG, ("compacting LOH due to hard limit"));
+            if (full_compact_gc_p)
+            {
+                n = max_generation;
+                *blocking_collection_p = TRUE;
+                settings.loh_compaction = TRUE;
+                dprintf (GTC_LOG, ("compacting LOH due to hard limit"));
+            }
         }
     }
 
@@ -16046,7 +16041,6 @@ void gc_heap::gc1()
                     desired_per_heap = Align(smoothed_desired_per_heap_loh, get_alignment_constant (false));
 
                     gc_heap::final_loh_desired = desired_per_heap;
-                    assert(desired_per_heap != 0);
                 }
 #endif //0
                 for (int i = 0; i < gc_heap::n_heaps; i++)
@@ -16880,7 +16874,8 @@ void gc_heap::garbage_collect_pm_full_gc()
 
 void gc_heap::garbage_collect (int n)
 {
-#if false // ifdef MULTIPLE_HEAPS
+    // TODO: don't include this in the PR
+#ifdef MULTIPLE_HEAPS
     FIRE_EVENT (
         GCCreateSegment_V1,
         /*was 'address'*/ reinterpret_cast<void*>(gc_heap::final_loh_desired),
@@ -30020,8 +30015,6 @@ void gc_heap::init_static_data()
         static_data_table[i][0].min_size = gen0_min_size;
         static_data_table[i][0].max_size = gen0_max_size;
         static_data_table[i][1].max_size = gen1_max_size;
-
-        const size_t prev = static_data_table[i][max_generation + 1].min_size;
     }
 }
 
@@ -34151,7 +34144,7 @@ HRESULT GCHeap::Initialize()
 
     nhp_from_config = static_cast<uint32_t>(GCConfig::GetHeapCount());
     
-    gc_heap::loh_delta = (size_t)GCConfig::GetLOHDelta();
+    //gc_heap::loh_delta = (size_t)GCConfig::GetLOHDelta();
     
     uint32_t nhp_from_process = GCToOSInterface::GetCurrentProcessCpuCount();
 
@@ -35062,13 +35055,7 @@ GCHeap::AllocLHeap( size_t size, uint32_t flags REQD_ALIGN_DCL)
     alloc_context* acontext = generation_alloc_context (hp->generation_of (max_generation+1));
 
 #ifdef MULTIPLE_HEAPS
-    // TODO: AssignLohHeapIfNecessary
-    if (acontext->loh_alloc_heap() == 0)
-    {
-        AssignLOHHeap (acontext);
-        assert (acontext->loh_alloc_heap());
-    }
-    assert(acontext->loh_alloc_heap());
+    AssignLOHHeapIfNecessary (acontext);
 #endif
 
     newAlloc = (Object*) hp->allocate_large_object (
@@ -35140,11 +35127,7 @@ GCHeap::Alloc(gc_alloc_context* context, size_t size, uint32_t flags REQD_ALIGN_
     }
     else
     {
-        if (acontext->loh_alloc_heap() == 0)
-        {
-            AssignLOHHeap (acontext);
-            assert (acontext->loh_alloc_heap());
-        }
+        AssignLOHHeapIfNecessary (acontext);
         hp = acontext->loh_alloc_heap()->pGenGCHeap;
     }
 #else
@@ -36118,9 +36101,12 @@ void GCHeap::AssignHeap (alloc_context* acontext)
     acontext->set_alloc_heap(GetHeap(heap_select::select_heap(acontext, 0)));
     acontext->set_home_heap(acontext->get_alloc_heap());
 }
-void GCHeap::AssignLOHHeap (alloc_context* acontext)
+void GCHeap::AssignLOHHeapIfNecessary (alloc_context* acontext)
 {
-    acontext->loh_alloc_heap() = GetHeap(heap_select::select_heap(acontext, 0));
+    if (acontext->loh_alloc_heap() == nullptr)
+    {
+        acontext->loh_alloc_heap() = GetHeap(heap_select::select_heap(acontext, 0));
+    }
 }
 GCHeap* GCHeap::GetHeap (int n)
 {
