@@ -403,6 +403,7 @@ struct gc_history_global
     // desired_new_allocation such as equalization or smoothing so
     // record the final budget here. 
     size_t final_youngest_desired;
+    size_t final_loh_desired;
     uint32_t num_heaps;
     int condemned_generation;
     int gen0_reduction_count;

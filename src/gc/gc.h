@@ -229,6 +229,11 @@ struct alloc_context : gc_alloc_context
     {
         gc_reserved_2 = heap;
     }
+
+    inline SVR::GCHeap*& loh_alloc_heap()
+    {
+        return *reinterpret_cast<SVR::GCHeap**>(&gc_reserved_3);
+    }
 #endif // FEATURE_SVR_GC
 };
 

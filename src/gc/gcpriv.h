@@ -138,8 +138,8 @@ inline void FATAL_GC_ERROR()
 
 //#define STRESS_PINNING    //Stress pinning by pinning randomly
 
-//#define TRACE_GC          //debug trace gc operation
-//#define SIMPLE_DPRINTF
+#define TRACE_GC          //debug trace gc operation
+#define SIMPLE_DPRINTF
 
 //#define TIME_GC           //time allocation and garbage collection
 //#define TIME_WRITE_WATCH  //time GetWriteWatch and ResetWriteWatch calls
@@ -267,7 +267,8 @@ void GCLog (const char *fmt, ... );
 //#define dprintf(l,x) {if (l == DT_LOG_0) {GCLog x;}}
 //#define dprintf(l,x) {if (trace_gc && ((l <= 2) || (l == BGC_LOG) || (l==GTC_LOG))) {GCLog x;}}
 //#define dprintf(l,x) {if ((l == 1) || (l == 2222)) {GCLog x;}}
-#define dprintf(l,x) {if ((l <= 1) || (l == GTC_LOG)) {GCLog x;}}
+#define LOGME 3333
+#define dprintf(l,x) {if ((l == LOGME)) {GCLog x;}}
 //#define dprintf(l,x) {if ((l==GTC_LOG) || (l <= 1)) {GCLog x;}}
 //#define dprintf(l,x) {if (trace_gc && ((l <= print_level) || (l==GTC_LOG))) {GCLog x;}}
 //#define dprintf(l,x) {if (l==GTC_LOG) {printf ("\n");printf x ; fflush(stdout);}}
@@ -1229,11 +1230,17 @@ public:
     void gc_thread_stub (void* arg);
 #endif //MULTIPLE_HEAPS
 
-    // For LOH allocations we only update the alloc_bytes_loh in allocation
+    // For LOH allocations we only update the alloc_bytes_loh and loh_alloc_heap in allocation
     // context - we don't actually use the ptr/limit from it so I am
     // making this explicit by not passing in the alloc_context.
     PER_HEAP
-    CObjectHeader* allocate_large_object (size_t size, int64_t& alloc_bytes);
+    CObjectHeader* allocate_large_object (
+        size_t size,
+        int64_t& alloc_bytes
+#ifdef MULTIPLE_HEAPS
+        , GCHeap*& loh_alloc_heap
+#endif
+    );
 
 #ifdef FEATURE_STRUCTALIGN
     PER_HEAP
@@ -3003,6 +3010,9 @@ public:
     PER_HEAP
     heap_segment* new_heap_segment;
 
+    PER_HEAP_ISOLATED
+    size_t times_switched_loh_heaps;
+
 #define alloc_quantum_balance_units (16)
 
     PER_HEAP_ISOLATED
@@ -3016,6 +3026,9 @@ public:
     size_t allocation_running_amount;
 
 #endif //MULTIPLE_HEAPS
+
+    PER_HEAP_ISOLATED
+    size_t final_loh_desired;
 
     PER_HEAP_ISOLATED
     gc_latency_level latency_level;
@@ -3130,6 +3143,9 @@ public:
     //testing to change the general case.
     PER_HEAP_ISOLATED
     size_t heap_hard_limit;
+
+    PER_HEAP_ISOLATED
+    size_t loh_delta;
 
     PER_HEAP_ISOLATED
     CLRCriticalSection check_commit_cs;
