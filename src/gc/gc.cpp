@@ -2435,7 +2435,10 @@ sorted_table* gc_heap::seg_table;
 GCEvent     gc_heap::ee_suspend_event;
 size_t      gc_heap::min_balance_threshold = 0;
 size_t      gc_heap::times_switched_loh_heaps = 0;
+size_t      gc_heap::times_switched_loh_heaps_numa_node = 0;
 size_t      gc_heap::times_hit_hard_limit_retry = 0;
+size_t      gc_heap::total_cleared_in_free_list_calls = 0;
+size_t      gc_heap::total_cleared_in_free_list = 0;
 #endif //MULTIPLE_HEAPS
 
 size_t gc_heap::final_loh_desired = 0;
@@ -2533,6 +2536,8 @@ uint64_t    gc_heap::entry_available_physical_mem = 0;
 size_t      gc_heap::heap_hard_limit = 0;
 
 //size_t      gc_heap::loh_delta       = 0;
+size_t gc_heap::delta_factor = 0;
+size_t gc_heap::numa_node_factor = 0;
 
 #ifdef BACKGROUND_GC
 GCEvent     gc_heap::bgc_start_event;
@@ -11483,6 +11488,18 @@ void allocator::commit_alloc_list_changes()
     }
 }
 
+void gc_heap::do_memclr(uint8_t* start, size_t limit_size, int gen_number)
+{
+#ifdef MULTIPLE_HEAPS
+    if (gen_number == 3)
+    {
+        cleared_in_free_list_calls_real++;
+        cleared_in_free_list_real += limit_size;
+    }
+#endif
+    memclr(start, limit_size);
+}
+
 void gc_heap::adjust_limit_clr (uint8_t* start, size_t limit_size,
                                 alloc_context* acontext, heap_segment* seg,
                                 int align_const, int gen_number)
@@ -11586,7 +11603,7 @@ void gc_heap::adjust_limit_clr (uint8_t* start, size_t limit_size,
         add_saved_spinlock_info (loh_p, me_release, mt_clr_mem);
         leave_spin_lock (msl);
         dprintf (3, ("clearing memory at %Ix for %d bytes", (start - plug_skew), limit_size));
-        memclr (start - plug_skew, limit_size);
+        do_memclr (start - plug_skew, limit_size, gen_number);
     }
     else
     {
@@ -11605,7 +11622,7 @@ void gc_heap::adjust_limit_clr (uint8_t* start, size_t limit_size,
 
             dprintf (2, ("clearing memory before used at %Ix for %Id bytes", 
                 (start - plug_skew), (plug_skew + used - start)));
-            memclr (start - plug_skew, used - (start - plug_skew));
+            do_memclr (start - plug_skew, used - (start - plug_skew), gen_number);
         }
     }
 
@@ -12216,6 +12233,10 @@ BOOL gc_heap::a_fit_free_list_large_p (size_t size,
 #endif //BACKGROUND_GC
                     {
                         adjust_limit_clr (free_list, limit, acontext, 0, align_const, gen_number);
+#ifdef MULTIPLE_HEAPS
+                        cleared_in_free_list_calls++;
+                        cleared_in_free_list += limit;
+#endif
                     }
 
                     //fix the limit to compensate for adjust_limit_clr making it too short 
@@ -13597,10 +13618,13 @@ gc_heap* gc_heap::balance_heaps_loh (alloc_context* acontext, size_t alloc_size)
         ptrdiff_t org_size = dd_new_allocation (dd);
         gc_heap* max_hp;
         ptrdiff_t max_size;
-        size_t delta = dd_min_size (dd);
+        size_t delta_factor = gc_heap::delta_factor == 0 ? 1024 : gc_heap::delta_factor;
+        size_t delta = dd_min_size (dd) * delta_factor / 1024;
         int start, end, finish;
         heap_select::get_heap_range_for_heap(org_hp->heap_number, &start, &end);
         finish = start + n_heaps;
+
+        bool changed_numa_node = false;
 
 try_again:
         {
@@ -13632,7 +13656,9 @@ try_again:
         if ((max_hp == org_hp) && (end < finish))
         {
             start = end; end = finish;
-            delta = dd_min_size (dd);
+            size_t numa_node_factor = gc_heap::numa_node_factor == 0 ? 1024 : gc_heap::numa_node_factor;
+            delta = dd_min_size (dd) * numa_node_factor / 1024; // Make it 1.5x hard to balance to remote nodes on NUMA.
+            changed_numa_node = true;
             goto try_again;
         }
 
@@ -13644,6 +13670,8 @@ try_again:
             
             acontext->loh_alloc_heap() = GCHeap::GetHeap(max_hp->heap_number);
             gc_heap::times_switched_loh_heaps++;
+            if (changed_numa_node)
+                gc_heap::times_switched_loh_heaps_numa_node++;
         }
 
         return max_hp;
@@ -16943,11 +16971,42 @@ void gc_heap::garbage_collect (int n)
 {
     // TODO: don't include this in the PR
 #ifdef MULTIPLE_HEAPS
+
+    const TotalCleared total_cleared = get_total_cleared_in_free_list();
+    gc_heap::total_cleared_in_free_list_calls = total_cleared.calls;
+    gc_heap::total_cleared_in_free_list = total_cleared.bytes;
+    const TotalCleared total_cleared_real = get_total_cleared_in_free_list_real();
+
+    const size_t times_switched_loh_heaps_numa_node = gc_heap::times_switched_loh_heaps_numa_node;
+
+    // We will fire events with different numbers -- dotnet-gc-infra should recognize those
     FIRE_EVENT (
         GCCreateSegment_V1,
         /*was 'address'*/ reinterpret_cast<void*>(gc_heap::final_loh_desired),
-        /*was 'size'*/ gc_heap::times_switched_loh_heaps,
-        /*was 'type', an enum */ static_cast<uint32_t>(gc_heap::times_hit_hard_limit_retry));
+        gc_heap::times_hit_hard_limit_retry,
+        /*was 'type', an enum */ 1337
+    );
+    
+    FIRE_EVENT (
+        GCCreateSegment_V1,
+        /*was 'size'*/ reinterpret_cast<void*>(gc_heap::times_switched_loh_heaps),
+        /*was 'size'*/ gc_heap::times_switched_loh_heaps_numa_node,
+        1338
+    );
+
+    FIRE_EVENT (
+        GCCreateSegment_V1,
+        reinterpret_cast<void*>(gc_heap::total_cleared_in_free_list_calls),
+        gc_heap::total_cleared_in_free_list,
+        1339
+    );
+
+    FIRE_EVENT (
+        GCCreateSegment_V1,
+        reinterpret_cast<void*>(total_cleared_real.calls),
+        total_cleared_real.bytes,
+        1340
+    );
 #endif
 
     //reset the number of alloc contexts
@@ -19584,6 +19643,43 @@ size_t gc_heap::committed_size()
 
     return total_committed;
 }
+
+#ifdef MULTIPLE_HEAPS
+TotalCleared gc_heap::get_total_cleared_in_free_list()
+{
+    size_t total_cleared_bytes = 0;
+    size_t total_cleared_calls = 0;
+
+#ifdef MULTIPLE_HEAPS
+    for (int hn = 0; hn < gc_heap::n_heaps; hn++)
+    {
+        gc_heap* hp = gc_heap::g_heaps [hn];
+        total_cleared_bytes += hp->cleared_in_free_list;
+        total_cleared_calls += hp->cleared_in_free_list_calls;
+    }
+#endif
+
+    return TotalCleared{total_cleared_calls, total_cleared_bytes};
+}
+
+TotalCleared gc_heap::get_total_cleared_in_free_list_real()
+{
+    size_t total_cleared_bytes = 0;
+    size_t total_cleared_calls = 0;
+
+#ifdef MULTIPLE_HEAPS
+    for (int hn = 0; hn < gc_heap::n_heaps; hn++)
+    {
+        gc_heap* hp = gc_heap::g_heaps [hn];
+        total_cleared_bytes += hp->cleared_in_free_list_real;
+        total_cleared_calls += hp->cleared_in_free_list_calls_real;
+    }
+#endif
+
+    return TotalCleared{total_cleared_calls, total_cleared_bytes};
+}
+
+#endif
 
 size_t gc_heap::get_total_committed_size()
 {
@@ -34212,6 +34308,8 @@ HRESULT GCHeap::Initialize()
     nhp_from_config = static_cast<uint32_t>(GCConfig::GetHeapCount());
     
     //gc_heap::loh_delta = (size_t)GCConfig::GetLOHDelta();
+    gc_heap::delta_factor = (size_t) GCConfig::GetDeltaFactor();
+    gc_heap::numa_node_factor = (size_t)GCConfig::GetNumaNodeFactor();
     
     uint32_t nhp_from_process = GCToOSInterface::GetCurrentProcessCpuCount();
 
@@ -35171,14 +35269,6 @@ GCHeap::Alloc(gc_alloc_context* context, size_t size, uint32_t flags REQD_ALIGN_
     unsigned finish;
 #endif //COUNT_CYCLES
 #endif //TRACE_GC
-
-#ifdef MULTIPLE_HEAPS
-    if (acontext->get_alloc_heap() == 0)
-    {
-        AssignHeap (acontext);
-        assert (acontext->get_alloc_heap());
-    }
-#endif //MULTIPLE_HEAPS
 
     bool is_small_object = size < loh_size_threshold;
 #ifdef MULTIPLE_HEAPS

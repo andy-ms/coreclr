@@ -81,6 +81,8 @@ public:
   INT_CONFIG(LOHThreshold, "GCLOHThreshold", LARGE_OBJECT_SIZE,                                \
       "Specifies the size that will make objects go on LOH")                                   \
   /*INT_CONFIG(LOHDelta, "GCLOHDelta", 0, "doc doc doc")*/                                     \
+  INT_CONFIG(DeltaFactor, "GCDeltaFactor", 0, "doc doc doc")                                   \
+  INT_CONFIG(NumaNodeFactor, "GCNumaNodeFactor", 0, "doc doc doc")                             \
   INT_CONFIG(BGCSpinCount,  "BGCSpinCount", 140, "Specifies the bgc spin count")               \
   INT_CONFIG(BGCSpin,       "BGCSpin",      2,   "Specifies the bgc spin time")                \
   INT_CONFIG(HeapCount,     "GCHeapCount",  0,   "Specifies the number of server GC heaps")    \

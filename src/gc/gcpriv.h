@@ -1072,6 +1072,12 @@ enum interesting_data_point
     max_idp_count
 };
 
+struct TotalCleared
+{
+    size_t calls;
+    size_t bytes;
+};
+
 //class definition of the internal class
 class gc_heap
 {
@@ -1090,6 +1096,9 @@ class gc_heap
     friend class exclusive_sync;
     friend class recursive_gc_sync;
 #endif //BACKGROUND_GC
+
+    PER_HEAP
+    void do_memclr(uint8_t* mem, size_t size, int gen_number);
 
 #if defined (WRITE_BARRIER_CHECK) && !defined (SERVER_GC)
     friend void checkGCWriteBarrier();
@@ -1855,6 +1864,7 @@ protected:
     void adjust_limit_clr (uint8_t* start, size_t limit_size,
                            alloc_context* acontext, heap_segment* seg,
                            int align_const, int gen_number);
+
     PER_HEAP
     void  leave_allocation_segment (generation* gen);
 
@@ -2550,6 +2560,12 @@ protected:
     size_t get_total_heap_size ();
     PER_HEAP_ISOLATED
     size_t get_total_committed_size();
+#ifdef MULTIPLE_HEAPS
+    PER_HEAP_ISOLATED
+    TotalCleared get_total_cleared_in_free_list();
+    PER_HEAP_ISOLATED
+    TotalCleared get_total_cleared_in_free_list_real();
+#endif
     PER_HEAP_ISOLATED
     size_t get_total_fragmentation();
     PER_HEAP_ISOLATED
@@ -3014,6 +3030,9 @@ public:
     size_t times_switched_loh_heaps;
 
     PER_HEAP_ISOLATED
+    size_t times_switched_loh_heaps_numa_node;
+
+    PER_HEAP_ISOLATED
     size_t times_hit_hard_limit_retry;
 
 #define alloc_quantum_balance_units (16)
@@ -3149,6 +3168,12 @@ public:
 
     //PER_HEAP_ISOLATED
     //size_t loh_delta;
+
+    PER_HEAP_ISOLATED
+    size_t delta_factor;
+
+    PER_HEAP_ISOLATED
+    size_t numa_node_factor;
 
     PER_HEAP_ISOLATED
     CLRCriticalSection check_commit_cs;
@@ -3877,6 +3902,22 @@ public:
     size_t current_obj_size;
 
 #endif //HEAP_ANALYZE
+    
+#ifdef MULTIPLE_HEAPS
+    PER_HEAP
+    size_t cleared_in_free_list_calls = 0;
+    PER_HEAP
+    size_t cleared_in_free_list = 0;
+    PER_HEAP
+    size_t cleared_in_free_list_calls_real = 0;
+    PER_HEAP
+    size_t cleared_in_free_list_real = 0;
+
+    PER_HEAP_ISOLATED
+    size_t total_cleared_in_free_list_calls;
+    PER_HEAP_ISOLATED
+    size_t total_cleared_in_free_list;
+#endif
 
     /* ----------------------- global members ----------------------- */
 public:
