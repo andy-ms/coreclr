@@ -2436,9 +2436,8 @@ GCEvent     gc_heap::ee_suspend_event;
 size_t      gc_heap::min_balance_threshold = 0;
 size_t      gc_heap::times_switched_loh_heaps = 0;
 size_t      gc_heap::times_switched_loh_heaps_numa_node = 0;
+size_t      gc_heap::times_affinitized_thread = 0;
 size_t      gc_heap::times_hit_hard_limit_retry = 0;
-size_t      gc_heap::total_cleared_in_free_list_calls = 0;
-size_t      gc_heap::total_cleared_in_free_list = 0;
 #endif //MULTIPLE_HEAPS
 
 size_t gc_heap::final_loh_desired = 0;
@@ -2537,7 +2536,10 @@ size_t      gc_heap::heap_hard_limit = 0;
 
 //size_t      gc_heap::loh_delta       = 0;
 size_t gc_heap::delta_factor = 0;
+size_t gc_heap::home_heap_delta_factor = 0;
+size_t gc_heap::loh_default_heap_is_home = 0;
 size_t gc_heap::numa_node_factor = 0;
+size_t gc_heap::loh_numa_node_from_home_heap = 0;
 
 #ifdef BACKGROUND_GC
 GCEvent     gc_heap::bgc_start_event;
@@ -5235,6 +5237,11 @@ uint16_t heap_select::proc_no_to_heap_no[MAX_SUPPORTED_CPUS];
 uint16_t heap_select::heap_no_to_proc_no[MAX_SUPPORTED_CPUS];
 uint16_t heap_select::heap_no_to_numa_node[MAX_SUPPORTED_CPUS];
 uint16_t heap_select::numa_node_to_heap_map[MAX_SUPPORTED_CPUS+4];
+
+inline BOOL same_numa_node_p (int hn1, int hn2)
+{
+    return (heap_select::find_numa_node_from_heap_no (hn1) == heap_select::find_numa_node_from_heap_no (hn2));
+}
 
 BOOL gc_heap::create_thread_support (unsigned number_of_heaps)
 {
@@ -10286,6 +10293,7 @@ gc_heap* gc_heap::make_gc_heap (
 
     res->vm_heap = vm_hp;
     res->alloc_context_count = 0;
+    res->loh_alloc_context_count = 0;
 
 #ifdef MARK_LIST
 #ifdef PARALLEL_MARK_LIST_SORT
@@ -13517,7 +13525,7 @@ void gc_heap::balance_heaps (alloc_context* acontext)
                 gc_heap* org_hp = acontext->get_alloc_heap()->pGenGCHeap;
 
                 dynamic_data* dd = org_hp->dynamic_data_of (0);
-                ptrdiff_t org_size = dd_new_allocation (dd);
+                const ptrdiff_t org_size = dd_new_allocation (dd);
                 int org_alloc_context_count;
                 int max_alloc_context_count;
                 gc_heap* max_hp;
@@ -13586,6 +13594,7 @@ try_again:
                             dprintf (3, ("Failed to set the ideal processor for heap %d.",
                                         org_hp->heap_number));
                         }
+                        gc_heap::times_affinitized_thread++;
                     }
                     dprintf (3, ("Switching context %p (home heap %d) ", 
                                  acontext,
@@ -13605,40 +13614,79 @@ try_again:
     acontext->alloc_count++;
 }
 
-gc_heap* gc_heap::balance_heaps_loh (alloc_context* acontext, size_t alloc_size)
+gc_heap* gc_heap::balance_heaps_loh (alloc_context* acontext, size_t alloc_size, int current_soh_heap_number)
 {
     gc_heap* org_hp = acontext->loh_alloc_heap()->pGenGCHeap;
     dprintf (3, ("[h%d] LA: %Id", org_hp->heap_number, alloc_size));
 
-    //if (size > 128*1024)
-    if (1)
-    {
-        dynamic_data* dd = org_hp->dynamic_data_of (max_generation + 1);
+    const int home_heap = heap_select::select_heap(acontext, 0);
 
-        ptrdiff_t org_size = dd_new_allocation (dd);
+    gc_heap* default_hp = gc_heap::loh_default_heap_is_home ? GCHeap::GetHeap(home_heap)->pGenGCHeap : org_hp;
+
+    //if (size > 128*1024)
+    //if (1)
+    //{
+        dynamic_data* dd = default_hp->dynamic_data_of (max_generation + 1);
+
+        const ptrdiff_t default_hp_size = dd_new_allocation (dd);
         gc_heap* max_hp;
         ptrdiff_t max_size;
-        size_t delta_factor = gc_heap::delta_factor == 0 ? 1024 : gc_heap::delta_factor;
-        size_t delta = dd_min_size (dd) * delta_factor / 1024;
-        int start, end, finish;
-        heap_select::get_heap_range_for_heap(org_hp->heap_number, &start, &end);
-        finish = start + n_heaps;
+        size_t delta = dd_min_size (dd) * gc_heap::delta_factor / 1024;
+        const size_t home_heap_delta = dd_min_size(dd) * gc_heap::home_heap_delta_factor / 1024;
+        int heap_for_numa_node = 0;
+        if (gc_heap::loh_numa_node_from_home_heap == 0)
+            heap_for_numa_node = default_hp->heap_number;
+        else if (gc_heap::loh_numa_node_from_home_heap == 1)
+            heap_for_numa_node = home_heap;
+        //else if (gc_heap::loh_numa_node_from_home_heap == 2)
+        //    heap_for_numa_node = current_soh_heap_number;
+        else
+            assert(false);
+        int start, end;
+        heap_select::get_heap_range_for_heap(heap_for_numa_node, &start, &end);
+        
+        const int finish = start + n_heaps;
 
         bool changed_numa_node = false;
 
 try_again:
+#ifdef LOH_ALLOC_CONTEXT_COUNT
+        int org_alloc_context_count, max_alloc_context_count;
+
+        do
         {
-            max_hp = org_hp;
-            max_size = org_size + delta;
-            dprintf (3, ("orig hp: %d, max size: %d",
-                org_hp->heap_number,
+#endif
+            max_hp = default_hp;
+            max_size = default_hp_size + delta;
+            
+            if (default_hp->heap_number == home_heap)
+                max_size = max_size + home_heap_delta;
+
+            dprintf (3, ("default hp: %d, max size: %d",
+                default_hp->heap_number,
                 max_size));
+
+#ifdef LOH_ALLOC_CONTEXT_COUNT
+            org_alloc_context_count = org_hp->loh_alloc_context_count;
+            max_alloc_context_count = org_alloc_context_count;
+            if (max_alloc_context_count > 1)
+                max_size /= max_alloc_context_count; //TODO: this is a silly optimization? Just always divide?
+#endif
 
             for (int i = start; i < end; i++)
             {
                 gc_heap* hp = GCHeap::GetHeap(i%n_heaps)->pGenGCHeap;
                 dd = hp->dynamic_data_of (max_generation + 1);
                 ptrdiff_t size = dd_new_allocation (dd);
+
+                if (hp->heap_number == home_heap)
+                    size = size + home_heap_delta;
+
+#ifdef LOH_ALLOC_CONTEXT_COUNT
+                const int hp_alloc_context_count = hp->loh_alloc_context_count;
+                if (hp_alloc_context_count > 0)
+                    size /= (hp_alloc_context_count + 1);
+#endif
                 dprintf (3, ("hp: %d, size: %d",
                     hp->heap_number,
                     size));
@@ -13646,24 +13694,35 @@ try_again:
                 {
                     max_hp = hp;
                     max_size = size;
+                    #ifdef LOH_ALLOC_CONTEXT_COUNT
+                    max_alloc_context_count = hp_alloc_context_count;
+                    #endif
                     dprintf (3, ("max hp: %d, max size: %d",
                         max_hp->heap_number,
                         max_size));
                 }
             }
+#ifdef LOH_ALLOC_CONTEXT_COUNT
         }
+        while (org_alloc_context_count !=org_hp->loh_alloc_context_count ||
+            max_alloc_context_count != max_hp->loh_alloc_context_count);
+#endif
 
-        if ((max_hp == org_hp) && (end < finish))
+        if ((max_hp == default_hp) && (end < finish))
         {
             start = end; end = finish;
-            size_t numa_node_factor = gc_heap::numa_node_factor == 0 ? 1024 : gc_heap::numa_node_factor;
-            delta = dd_min_size (dd) * numa_node_factor / 1024; // Make it 1.5x hard to balance to remote nodes on NUMA.
+            delta = dd_min_size (dd) * gc_heap::numa_node_factor / 1024; // Make it harder to balance to remote nodes on NUMA.
             changed_numa_node = true;
             goto try_again;
         }
 
-        if (max_hp != org_hp)
+        if (max_hp != default_hp)
         {
+#ifdef LOH_ALLOC_CONTEXT_COUNT
+            org_hp->loh_alloc_context_count--;
+            max_hp->loh_alloc_context_count++;
+#endif
+
             dprintf (LOGME, ("loh: %d(%Id)->%d(%Id)", 
                 org_hp->heap_number, dd_new_allocation (org_hp->dynamic_data_of (max_generation + 1)),
                 max_hp->heap_number, dd_new_allocation (max_hp->dynamic_data_of (max_generation + 1))));
@@ -13675,11 +13734,11 @@ try_again:
         }
 
         return max_hp;
-    }
-    else
-    {
-        return org_hp;
-    }
+    //}
+    //else
+    //{
+    //    return org_hp;
+    //}
 }
 
 // Unlike balance_heaps_loh, this may return nullptr if we failed to change heaps
@@ -13692,9 +13751,9 @@ gc_heap* gc_heap::balance_heaps_loh_hard_limit_retry (alloc_context* acontext, s
 
     assert (heap_hard_limit);
 
-    int start, end, finish;
+    int start, end;
     heap_select::get_heap_range_for_heap (org_hp->heap_number, &start, &end);
-    finish = start + n_heaps;
+    const int finish = start + n_heaps;
 
     gc_heap* max_hp = nullptr;
     size_t max_end_of_seg_space = alloc_size - 1; // Must be more than this much, or return NULL
@@ -13756,7 +13815,15 @@ BOOL gc_heap::allocate_more_space(alloc_context* acontext, size_t size,
             }
             else
             {
-                alloc_heap = balance_heaps_loh (acontext, size);
+                alloc_heap = balance_heaps_loh (acontext, size, this->heap_number);
+            }
+
+            // Note: these counts include hard_limit_retry
+            this->balance_heaps_calls++;
+            const bool numa_node_differs = !same_numa_node_p(heap_select::select_heap(acontext, 0), alloc_heap->heap_number);
+            if (numa_node_differs)
+            {
+                this->balance_heaps_calls_where_heap_and_processor_numa_node_differ++;
             }
 
             status = alloc_heap->try_allocate_more_space (acontext, size, alloc_generation_number);
@@ -16176,6 +16243,7 @@ void gc_heap::gc1()
             gc_t_join.restart();
         }
         alloc_context_count = 0;
+        loh_alloc_context_count = 0; //TODO: why?
         heap_select::mark_heap (heap_number);
     }
 
@@ -16490,6 +16558,7 @@ void gc_heap::set_soh_allocations_for_no_gc()
         dd_gc_new_allocation (dd) = dd_new_allocation (dd);
 #ifdef MULTIPLE_HEAPS
         alloc_context_count = 0;
+        //don't touch loh_alloc_context-count, right?
 #endif //MULTIPLE_HEAPS
     }
 }
@@ -16973,11 +17042,8 @@ void gc_heap::garbage_collect (int n)
 #ifdef MULTIPLE_HEAPS
 
     const TotalCleared total_cleared = get_total_cleared_in_free_list();
-    gc_heap::total_cleared_in_free_list_calls = total_cleared.calls;
-    gc_heap::total_cleared_in_free_list = total_cleared.bytes;
     const TotalCleared total_cleared_real = get_total_cleared_in_free_list_real();
-
-    const size_t times_switched_loh_heaps_numa_node = gc_heap::times_switched_loh_heaps_numa_node;
+    const BalanceHeapsStats balance_heaps_stats = get_balance_heaps_stats();
 
     // We will fire events with different numbers -- dotnet-gc-infra should recognize those
     FIRE_EVENT (
@@ -16996,8 +17062,8 @@ void gc_heap::garbage_collect (int n)
 
     FIRE_EVENT (
         GCCreateSegment_V1,
-        reinterpret_cast<void*>(gc_heap::total_cleared_in_free_list_calls),
-        gc_heap::total_cleared_in_free_list,
+        reinterpret_cast<void*>(total_cleared.calls),
+        total_cleared.bytes,
         1339
     );
 
@@ -17006,6 +17072,20 @@ void gc_heap::garbage_collect (int n)
         reinterpret_cast<void*>(total_cleared_real.calls),
         total_cleared_real.bytes,
         1340
+    );
+
+    FIRE_EVENT (
+        GCCreateSegment_V1,
+        reinterpret_cast<void*>(balance_heaps_stats.total_calls),
+        balance_heaps_stats.total_calls_where_heap_and_processor_numa_node_differ,
+        1341
+    );
+
+    FIRE_EVENT (
+        GCCreateSegment_V1,
+        reinterpret_cast<void*>(gc_heap::times_affinitized_thread),
+        0,
+        1342
     );
 #endif
 
@@ -18378,11 +18458,6 @@ more_to_do:
 }
 
 #ifdef MH_SC_MARK
-BOOL same_numa_node_p (int hn1, int hn2)
-{
-    return (heap_select::find_numa_node_from_heap_no (hn1) == heap_select::find_numa_node_from_heap_no (hn2));
-}
-
 int find_next_buddy_heap (int this_heap_number, int current_buddy, int n_heaps)
 {
     int hn = (current_buddy+1)%n_heaps;
@@ -19670,13 +19745,30 @@ TotalCleared gc_heap::get_total_cleared_in_free_list_real()
 #ifdef MULTIPLE_HEAPS
     for (int hn = 0; hn < gc_heap::n_heaps; hn++)
     {
-        gc_heap* hp = gc_heap::g_heaps [hn];
+        const gc_heap* hp = gc_heap::g_heaps [hn];
         total_cleared_bytes += hp->cleared_in_free_list_real;
         total_cleared_calls += hp->cleared_in_free_list_calls_real;
     }
 #endif
 
     return TotalCleared{total_cleared_calls, total_cleared_bytes};
+}
+
+BalanceHeapsStats gc_heap::get_balance_heaps_stats()
+{
+    size_t total_balance_heaps_calls = 0;
+    size_t total_where_heap_and_processor_numa_node_differ = 0;
+
+#ifdef MULTIPLE_HEAPS
+    for (int hn = 0; hn < gc_heap::n_heaps; hn++)
+    {
+        const gc_heap* hp = gc_heap::g_heaps [hn];
+        total_balance_heaps_calls += hp->balance_heaps_calls;
+        total_where_heap_and_processor_numa_node_differ += hp->balance_heaps_calls_where_heap_and_processor_numa_node_differ;
+    }
+#endif
+
+    return BalanceHeapsStats{total_balance_heaps_calls, total_where_heap_and_processor_numa_node_differ};
 }
 
 #endif
@@ -34309,7 +34401,10 @@ HRESULT GCHeap::Initialize()
     
     //gc_heap::loh_delta = (size_t)GCConfig::GetLOHDelta();
     gc_heap::delta_factor = (size_t) GCConfig::GetDeltaFactor();
+    gc_heap::home_heap_delta_factor = (size_t) GCConfig::GetHomeHeapDeltaFactor();
+    gc_heap::loh_default_heap_is_home = (size_t) GCConfig::GetLohDefaultHeapIsHome();
     gc_heap::numa_node_factor = (size_t)GCConfig::GetNumaNodeFactor();
+    gc_heap::loh_numa_node_from_home_heap = (size_t)GCConfig::GetLohNumaNodeFromHomeHeap();
     
     uint32_t nhp_from_process = GCToOSInterface::GetCurrentProcessCpuCount();
 

@@ -1078,6 +1078,12 @@ struct TotalCleared
     size_t bytes;
 };
 
+struct BalanceHeapsStats
+{
+    size_t total_calls;
+    size_t total_calls_where_heap_and_processor_numa_node_differ;
+};
+
 //class definition of the internal class
 class gc_heap
 {
@@ -1233,7 +1239,7 @@ public:
 #ifdef MULTIPLE_HEAPS
     static void balance_heaps (alloc_context* acontext);
     static 
-    gc_heap* balance_heaps_loh (alloc_context* acontext, size_t size);
+    gc_heap* balance_heaps_loh (alloc_context* acontext, size_t size, int current_soh_heap_number);
     static gc_heap* balance_heaps_loh_hard_limit_retry (alloc_context* acontext, size_t size);
     static
     void gc_thread_stub (void* arg);
@@ -2565,6 +2571,8 @@ protected:
     TotalCleared get_total_cleared_in_free_list();
     PER_HEAP_ISOLATED
     TotalCleared get_total_cleared_in_free_list_real();
+    PER_HEAP_ISOLATED
+    BalanceHeapsStats get_balance_heaps_stats();
 #endif
     PER_HEAP_ISOLATED
     size_t get_total_fragmentation();
@@ -3033,6 +3041,9 @@ public:
     size_t times_switched_loh_heaps_numa_node;
 
     PER_HEAP_ISOLATED
+    size_t times_affinitized_thread;
+
+    PER_HEAP_ISOLATED
     size_t times_hit_hard_limit_retry;
 
 #define alloc_quantum_balance_units (16)
@@ -3173,7 +3184,16 @@ public:
     size_t delta_factor;
 
     PER_HEAP_ISOLATED
+    size_t home_heap_delta_factor;
+
+    PER_HEAP_ISOLATED
+    size_t loh_default_heap_is_home;
+
+    PER_HEAP_ISOLATED
     size_t numa_node_factor;
+
+    PER_HEAP_ISOLATED
+    size_t loh_numa_node_from_home_heap;
 
     PER_HEAP_ISOLATED
     CLRCriticalSection check_commit_cs;
@@ -3236,6 +3256,8 @@ protected:
     int heap_number;
     PER_HEAP
     VOLATILE(int) alloc_context_count;
+    PER_HEAP
+    VOLATILE(int) loh_alloc_context_count;
 #else //MULTIPLE_HEAPS
 #define vm_heap ((GCHeap*) g_theGCHeap)
 #define heap_number (0)
@@ -3912,11 +3934,10 @@ public:
     size_t cleared_in_free_list_calls_real = 0;
     PER_HEAP
     size_t cleared_in_free_list_real = 0;
-
-    PER_HEAP_ISOLATED
-    size_t total_cleared_in_free_list_calls;
-    PER_HEAP_ISOLATED
-    size_t total_cleared_in_free_list;
+    PER_HEAP
+    size_t balance_heaps_calls;
+    PER_HEAP
+    size_t balance_heaps_calls_where_heap_and_processor_numa_node_differ;
 #endif
 
     /* ----------------------- global members ----------------------- */
