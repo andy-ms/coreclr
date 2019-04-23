@@ -138,8 +138,8 @@ inline void FATAL_GC_ERROR()
 
 //#define STRESS_PINNING    //Stress pinning by pinning randomly
 
-//#define TRACE_GC          //debug trace gc operation
-//#define SIMPLE_DPRINTF
+#define TRACE_GC          //debug trace gc operation
+#define SIMPLE_DPRINTF
 
 //#define TIME_GC           //time allocation and garbage collection
 //#define TIME_WRITE_WATCH  //time GetWriteWatch and ResetWriteWatch calls
@@ -267,7 +267,8 @@ void GCLog (const char *fmt, ... );
 //#define dprintf(l,x) {if (l == DT_LOG_0) {GCLog x;}}
 //#define dprintf(l,x) {if (trace_gc && ((l <= 2) || (l == BGC_LOG) || (l==GTC_LOG))) {GCLog x;}}
 //#define dprintf(l,x) {if ((l == 1) || (l == 2222)) {GCLog x;}}
-#define dprintf(l,x) {if ((l <= 1) || (l == GTC_LOG)) {GCLog x;}}
+#define LOGME 3333
+#define dprintf(l,x) {if (l == LOGME) {GCLog x;}}
 //#define dprintf(l,x) {if ((l==GTC_LOG) || (l <= 1)) {GCLog x;}}
 //#define dprintf(l,x) {if (trace_gc && ((l <= print_level) || (l==GTC_LOG))) {GCLog x;}}
 //#define dprintf(l,x) {if (l==GTC_LOG) {printf ("\n");printf x ; fflush(stdout);}}
@@ -1298,7 +1299,7 @@ public:
     bool frozen_object_p(Object* obj);
 #endif // FEATURE_BASICFREEZE
 
-protected:
+//;protected:
 
     PER_HEAP_ISOLATED
     void walk_heap (walk_fn fn, void* context, int gen_number, BOOL walk_large_object_heap_p);
@@ -3190,7 +3191,7 @@ public:
     PER_HEAP
     size_t saved_ephemeral_plan_start_size[NUMBERGENERATIONS-1];
 
-protected:
+//protected:
 #ifdef MULTIPLE_HEAPS
     PER_HEAP
     GCHeap* vm_heap;
@@ -3907,7 +3908,7 @@ public:
     static
     BOOL      g_low_memory_status;
 
-protected:
+//protected:
     PER_HEAP
     void update_collection_counts ();
 }; // class gc_heap

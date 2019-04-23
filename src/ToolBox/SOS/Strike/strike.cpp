@@ -9725,7 +9725,8 @@ static const char * const str_gc_global_mechanisms[] =
     "promoting GCs",
     "GCs that did demotion",
     "card bundles",
-    "elevation logic"
+    "elevation logic",
+    "loh compacting gcs"
 };
 
 void PrintInterestingGCInfo(DacpGCInterestingInfoData* dataPerHeap)

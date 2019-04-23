@@ -816,7 +816,7 @@ struct MSLAYOUT DacpOomData : ZeroInit<DacpOomData>
 #define   DAC_MAX_COMPACT_REASONS_COUNT 11
 #define   DAC_MAX_EXPAND_MECHANISMS_COUNT 6
 #define   DAC_MAX_GC_MECHANISM_BITS_COUNT 2
-#define   DAC_MAX_GLOBAL_GC_MECHANISMS_COUNT 6
+#define   DAC_MAX_GLOBAL_GC_MECHANISMS_COUNT 8
 struct MSLAYOUT DacpGCInterestingInfoData : ZeroInit<DacpGCInterestingInfoData>
 {
     size_t interestingDataPoints[DAC_NUM_GC_DATA_POINTS];

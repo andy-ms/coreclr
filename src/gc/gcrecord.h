@@ -386,6 +386,7 @@ public:
 };
 
 // we store up to 32 boolean settings.
+// WARN: If modifying this, must change DAC_MAX_GLOBAL_GC_MECHANISMS_COUNT too.
 enum gc_global_mechanism_p
 {
     global_concurrent = 0,
@@ -394,6 +395,7 @@ enum gc_global_mechanism_p
     global_demotion = 3,
     global_card_bundles = 4,
     global_elevation = 5,
+    //global_loh_compaction = 6,
     max_global_mechanisms_count
 };
 
