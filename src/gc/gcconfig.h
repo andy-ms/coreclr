@@ -110,6 +110,7 @@ public:
       "Specifies a hard limit for the GC heap")                                                \
   INT_CONFIG(GCHeapHardLimitPercent, "GCHeapHardLimitPercent", 0,                              \
       "Specifies the GC heap usage as a percentage of the total memory")                       \
+  INT_CONFIG(GCBalanceHeapsLOHFactor, "GCBalanceHeapsLOHFactor", 0, "doc doc doc")                   \
   STRING_CONFIG(LogFile,    "GCLogFile",    "Specifies the name of the GC log file")           \
   STRING_CONFIG(ConfigLogFile, "GCConfigLogFile",                                              \
       "Specifies the name of the GC config log file")                                          \
