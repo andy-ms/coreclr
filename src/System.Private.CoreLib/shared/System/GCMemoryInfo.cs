@@ -22,6 +22,12 @@ namespace System
         public long TotalAvailableMemoryBytes { get; }
 
         /// <summary>
+        /// Hard limit, usually specified by the environment variable COMPLUS_GCHEAPHARDLIMIT.
+        /// 0 if this was not specified.
+        /// </summary>
+        public long HardLimitBytes { get; }
+
+        /// <summary>
         /// The total heap size when the last GC ocurred
         /// </summary>
         public long HeapSizeBytes { get; }
@@ -43,12 +49,14 @@ namespace System
         internal GCMemoryInfo(long highMemoryLoadThresholdBytes,
                               long memoryLoadBytes,
                               long totalAvailableMemoryBytes,
+                              long hardLimitBytes,
                               long heapSizeBytes,
                               long fragmentedBytes)
         {
             HighMemoryLoadThresholdBytes = highMemoryLoadThresholdBytes;
             MemoryLoadBytes = memoryLoadBytes;
             TotalAvailableMemoryBytes = totalAvailableMemoryBytes;
+            HardLimitBytes = hardLimitBytes;
             HeapSizeBytes = heapSizeBytes;
             FragmentedBytes = fragmentedBytes;
         }
