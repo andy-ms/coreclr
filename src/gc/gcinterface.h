@@ -612,6 +612,8 @@ public:
                                size_t* lastRecordedHeapSize,
                                size_t* lastRecordedFragmentation) = 0;
 
+    virtual void GetConfigInfo(uint32_t* heapCount) = 0;
+
     // Gets the current GC latency mode.
     virtual int GetGcLatencyMode() = 0;
 

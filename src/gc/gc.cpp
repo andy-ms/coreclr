@@ -36165,6 +36165,15 @@ void GCHeap::GetMemoryInfo(uint32_t* highMemLoadThreshold,
     *lastRecordedFragmentation = gc_heap::last_gc_fragmentation;
 }
 
+void GCHeap::GetConfigInfo(uint32_t* heapCount)
+{
+#ifdef MULTIPLE_HEAPS
+    *heapCount = gc_heap::n_heaps;
+#else
+    *heapCount = 1;
+#endif
+}
+
 int GCHeap::GetGcLatencyMode()
 {
     return (int)(pGenGCHeap->settings.pause_mode);

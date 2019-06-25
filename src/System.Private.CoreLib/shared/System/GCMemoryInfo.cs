@@ -61,4 +61,17 @@ namespace System
             FragmentedBytes = fragmentedBytes;
         }
     }
+
+
+    // TODO: own file
+    public readonly struct GCConfigInfo
+    {
+        //TODO:Remove when done
+        public long HeapCount { get; }
+
+        internal GCConfigInfo(long heapCount)
+        {
+            HeapCount = heapCount;
+        }
+    }
 }

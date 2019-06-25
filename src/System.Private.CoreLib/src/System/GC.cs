@@ -79,6 +79,19 @@ namespace System
                                     (long)(ulong)lastRecordedFragmentation);
         }
 
+
+        [MethodImplAttribute(MethodImplOptions.InternalCall)]
+        internal static extern void GetConfigInfo(out uint heapCount);
+
+        public static GCConfigInfo GetGCConfigInfo()
+        {
+            GetConfigInfo(
+                out uint heapCount);
+
+            return new GCConfigInfo(
+                (long)heapCount);
+        }
+
         [DllImport(JitHelpers.QCall, CharSet = CharSet.Unicode)]
         internal static extern int _StartNoGCRegion(long totalSize, bool lohSizeKnown, long lohSize, bool disallowFullBlockingGC);
 

@@ -178,6 +178,8 @@ public:
                        size_t* lastRecordedHeapSize,
                        size_t* lastRecordedFragmentation);
 
+    void GetConfigInfo(uint32_t* heapCount);
+
     int GetGcLatencyMode();
     int SetGcLatencyMode(int newLatencyMode);
 

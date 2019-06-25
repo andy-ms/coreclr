@@ -898,6 +898,14 @@ FCIMPL6(void, GCInterface::GetMemoryInfo, UINT32* highMemLoadThreshold, UINT64* 
 }
 FCIMPLEND
 
+FCIMPL1(void, GCInterface::GetConfigInfo, UINT32* heapCount)
+{
+    FCALL_CONTRACT;
+    FC_GC_POLL_NOT_NEEDED();
+    return GCHeapUtilities::GetGCHeap()->GetConfigInfo(heapCount);
+}
+FCIMPLEND
+
 FCIMPL0(int, GCInterface::GetGcLatencyMode)
 {
     FCALL_CONTRACT;
