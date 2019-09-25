@@ -1339,203 +1339,30 @@ retry:
 // class to do synchronization between FGCs and BGC.
 class recursive_gc_sync
 {
-    static VOLATILE(int32_t) foreground_request_count;//initial state 0
     static VOLATILE(BOOL) gc_background_running; //initial state FALSE
-    static VOLATILE(int32_t) foreground_count; // initial state 0;
-    static VOLATILE(uint32_t) foreground_gate; // initial state FALSE;
-    static GCEvent foreground_complete;//Auto Reset
-    static GCEvent foreground_allowed;//Auto Reset
 public:
     static void begin_background();
     static void end_background();
-    static void begin_foreground();
-    static void end_foreground();
-    BOOL allow_foreground ();
-    static BOOL init();
-    static void shutdown();
+    static void init();
     static BOOL background_running_p() {return gc_background_running;}
 };
 
-VOLATILE(int32_t) recursive_gc_sync::foreground_request_count = 0;//initial state 0
-VOLATILE(int32_t) recursive_gc_sync::foreground_count = 0; // initial state 0;
 VOLATILE(BOOL) recursive_gc_sync::gc_background_running = FALSE; //initial state FALSE
-VOLATILE(uint32_t) recursive_gc_sync::foreground_gate = 0;
-GCEvent recursive_gc_sync::foreground_complete;//Auto Reset
-GCEvent recursive_gc_sync::foreground_allowed;//Manual Reset
 
-BOOL recursive_gc_sync::init ()
+void recursive_gc_sync::init ()
 {
-    foreground_request_count = 0;
-    foreground_count = 0;
     gc_background_running = FALSE;
-    foreground_gate = 0;
-
-    if (!foreground_complete.CreateOSAutoEventNoThrow(FALSE))
-    {
-        goto error;
-    }
-    if (!foreground_allowed.CreateManualEventNoThrow(FALSE))
-    {
-        goto error;
-    }
-    return TRUE;
-
-error:
-    shutdown();
-    return FALSE;
-
-}
-
-void recursive_gc_sync::shutdown()
-{
-    if (foreground_complete.IsValid())
-        foreground_complete.CloseEvent();
-    if (foreground_allowed.IsValid())
-        foreground_allowed.CloseEvent();
 }
 
 void recursive_gc_sync::begin_background()
 {
     dprintf (2, ("begin background"));
-    foreground_request_count = 1;
-    foreground_count = 1;
-    foreground_allowed.Reset();
     gc_background_running = TRUE;
 }
 void recursive_gc_sync::end_background()
 {
     dprintf (2, ("end background"));
     gc_background_running = FALSE;
-    foreground_gate = 1;
-    foreground_allowed.Set();
-}
-
-void recursive_gc_sync::begin_foreground()
-{
-    dprintf (2, ("begin_foreground"));
-
-    bool cooperative_mode = false;
-    if (gc_background_running)
-    {
-        gc_heap::fire_alloc_wait_event_begin (awr_fgc_wait_for_bgc);
-        gc_heap::alloc_wait_event_p = TRUE;
-
-try_again_top:
-
-        Interlocked::Increment (&foreground_request_count);
-
-try_again_no_inc:
-        dprintf(2, ("Waiting sync gc point"));
-        assert (foreground_allowed.IsValid());
-        assert (foreground_complete.IsValid());
-
-        cooperative_mode = gc_heap::enable_preemptive ();
-
-        foreground_allowed.Wait(INFINITE, FALSE);
-
-        dprintf(2, ("Waiting sync gc point is done"));
-
-        gc_heap::disable_preemptive (cooperative_mode);
-
-        if (foreground_gate)
-        {
-            Interlocked::Increment (&foreground_count);
-            dprintf (2, ("foreground_count: %d", (int32_t)foreground_count));
-            if (foreground_gate)
-            {
-                gc_heap::settings.concurrent = FALSE;
-                return;
-            }
-            else
-            {
-                end_foreground();
-                goto try_again_top;
-            }
-        }
-        else
-        {
-            goto try_again_no_inc;
-        }
-    }
-}
-
-void recursive_gc_sync::end_foreground()
-{
-    dprintf (2, ("end_foreground"));
-    if (gc_background_running)
-    {
-        Interlocked::Decrement (&foreground_request_count);
-        dprintf (2, ("foreground_count before decrement: %d", (int32_t)foreground_count));
-        if (Interlocked::Decrement (&foreground_count) == 0)
-        {
-            //c_write ((BOOL*)&foreground_gate, 0);
-            // TODO - couldn't make the syntax work with Volatile<T>
-            foreground_gate = 0;
-            if (foreground_count == 0)
-            {
-                foreground_allowed.Reset ();
-                dprintf(2, ("setting foreground complete event"));
-                foreground_complete.Set();
-            }
-        }
-    }
-}
-
-inline
-BOOL recursive_gc_sync::allow_foreground()
-{
-    assert (gc_heap::settings.concurrent);
-    dprintf (100, ("enter allow_foreground, f_req_count: %d, f_count: %d",
-                   (int32_t)foreground_request_count, (int32_t)foreground_count));
-
-    BOOL did_fgc = FALSE;
-
-    //if we have suspended the EE, just return because
-    //some thread could be waiting on this to proceed.
-    if (!GCHeap::GcInProgress)
-    {
-        //TODO BACKGROUND_GC This is to stress the concurrency between
-        //background and foreground
-//        gc_heap::disallow_new_allocation (0);
-
-        //GCToOSInterface::YieldThread(0);
-
-        //END of TODO
-        if (foreground_request_count != 0)
-        {
-            //foreground wants to run
-            //save the important settings
-            //TODO BACKGROUND_GC be more selective about the important settings.
-            gc_mechanisms saved_settings = gc_heap::settings;
-            do
-            {
-                did_fgc = TRUE;
-                //c_write ((BOOL*)&foreground_gate, 1);
-                // TODO - couldn't make the syntax work with Volatile<T>
-                foreground_gate = 1;
-                foreground_allowed.Set ();
-                foreground_complete.Wait (INFINITE, FALSE);
-            }while (/*foreground_request_count ||*/ foreground_gate);
-
-            assert (!foreground_gate);
-
-            //restore the important settings
-            gc_heap::settings = saved_settings;
-            GCHeap::GcCondemnedGeneration = gc_heap::settings.condemned_generation;
-            //the background GC shouldn't be using gc_high and gc_low
-            //gc_low = lowest_address;
-            //gc_high = highest_address;
-        }
-
-        //TODO BACKGROUND_GC This is to stress the concurrency between
-        //background and foreground
-//        gc_heap::allow_new_allocation (0);
-        //END of TODO
-    }
-
-    dprintf (100, ("leave allow_foreground"));
-    assert (gc_heap::settings.concurrent);
-    return did_fgc;
 }
 
 #endif //BACKGROUND_GC
@@ -11251,8 +11078,7 @@ gc_heap::init_gc_heap (int  h_number)
 
     if (h_number == 0)
     {
-        if (!recursive_gc_sync::init())
-            return 0;
+        recursive_gc_sync::init();
     }
 
     bgc_thread_running = 0;
@@ -28004,7 +27830,6 @@ void gc_heap::kill_gc_thread()
     bgc_start_event.CloseEvent();
     bgc_threads_timeout_cs.Destroy();
     bgc_thread = 0;
-    recursive_gc_sync::shutdown();
 }
 
 void gc_heap::bgc_thread_function()
@@ -33590,16 +33415,6 @@ public:
 // to protect against that eventuality.  That is too slow!
 
 
-
-BOOL IsValidObject99(uint8_t *pObject)
-{
-#ifdef VERIFY_HEAP
-    if (!((CObjectHeader*)pObject)->IsFree())
-        ((CObjectHeader *) pObject)->Validate();
-#endif //VERIFY_HEAP
-    return(TRUE);
-}
-
 #ifdef BACKGROUND_GC 
 BOOL gc_heap::bgc_mark_array_range (heap_segment* seg, 
                                     BOOL whole_seg_p,
@@ -36603,6 +36418,7 @@ GCHeap::GarbageCollectGeneration (unsigned int gen, gc_reason reason)
     // We are deciding whether we should fire the alloc wait end event here
     // because in begin_foreground we could be calling end_foreground 
     // if we need to retry.
+    // TODO: The above doesn't apply any more?
     if (gc_heap::alloc_wait_event_p)
     {
         hpt->fire_alloc_wait_event_end (awr_fgc_wait_for_bgc);
