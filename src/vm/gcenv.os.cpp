@@ -175,9 +175,11 @@ bool GCToOSInterface::SetCurrentThreadIdealAffinity(uint16_t srcProcNo, uint16_t
     LIMITED_METHOD_CONTRACT;
 
     bool success = true;
-
+#ifndef FEATURE_PAL
     GroupProcNo srcGroupProcNo(srcProcNo);
     GroupProcNo dstGroupProcNo(dstProcNo);
+
+    PROCESSOR_NUMBER proc;
 
     if (CPUGroupInfo::CanEnableGCCPUGroups())
     {
@@ -187,22 +189,13 @@ bool GCToOSInterface::SetCurrentThreadIdealAffinity(uint16_t srcProcNo, uint16_t
             //group. DO NOT MOVE THREADS ACROSS CPU GROUPS
             return true;
         }
-    }
 
-#if !defined(FEATURE_CORESYSTEM)
-    SetThreadIdealProcessor(GetCurrentThread(), (DWORD)dstGroupProcNo.GetProcIndex());
-#else
-    PROCESSOR_NUMBER proc;
-
-    if (dstGroupProcNo.GetGroup() != GroupProcNo::NoGroup)
-    {
         proc.Group = (WORD)dstGroupProcNo.GetGroup();
         proc.Number = (BYTE)dstGroupProcNo.GetProcIndex();
         proc.Reserved = 0;
 
-        success = !!SetThreadIdealProcessorEx(GetCurrentThread(), &proc, NULL);
+        success = !!SetThreadIdealProcessorEx(GetCurrentThread (), &proc, NULL);
     }
-#if !defined(FEATURE_PAL)
     else
     {
         if (GetThreadIdealProcessorEx(GetCurrentThread(), &proc))
@@ -211,10 +204,15 @@ bool GCToOSInterface::SetCurrentThreadIdealAffinity(uint16_t srcProcNo, uint16_t
             success = !!SetThreadIdealProcessorEx(GetCurrentThread(), &proc, &proc);
         }
     }
-#endif // !defined(FEATURE_PAL)
-#endif
 
     return success;
+
+#else // !FEATURE_PAL
+
+    // There is no way to set a thread ideal processor on Unix, so do nothing.
+    return true;
+
+#endif // !FEATURE_PAL
 }
 
 // Get the number of the current processor
