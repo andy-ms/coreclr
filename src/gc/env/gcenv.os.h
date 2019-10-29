@@ -105,8 +105,8 @@ public:
 
     // Determines whether or not this event is valid.
     // Returns:
-    //  true if this event is invalid (i.e. it has not yet been initialized or
-    //  has already been closed), false otherwise
+    //  false if this event is invalid (i.e. it has not yet been initialized or
+    //  has already been closed), true otherwise
     bool IsValid() const
     {
         return m_impl != nullptr;

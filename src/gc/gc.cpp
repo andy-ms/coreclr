@@ -563,12 +563,17 @@ size_t max_gc_buffers = 0;
 static CLRCriticalSection gc_log_lock;
 
 // we keep this much in a buffer and only flush when the buffer is full
-#define gc_log_buffer_size (1024*1024)
+//#define gc_log_buffer_size (1024*1024)
+// Use a small buffer so I can read the output!
+#define gc_log_buffer_size 1024
 uint8_t* gc_log_buffer = 0;
 size_t gc_log_buffer_offset = 0;
 
 void log_va_msg(const char *fmt, va_list args)
 {
+    vprintf(fmt, args);
+    printf("\n");
+
     gc_log_lock.Enter();
 
     const int BUFFERSIZE = 512;
@@ -782,7 +787,8 @@ enum gc_join_stage
     gc_join_expand_loh_no_gc = 36,
     gc_join_final_no_gc = 37,
     gc_join_disable_software_write_watch = 38,
-    gc_join_max = 39
+    gc_join_after_background_scanning = 39,
+    gc_join_max = 40
 };
 
 enum gc_join_flavor
@@ -1491,6 +1497,7 @@ try_again_no_inc:
             dprintf (2, ("foreground_count: %d", (int32_t)foreground_count));
             if (foreground_gate)
             {
+                dprintf(PRINTME, ("DISABLING SETTINGS.CONCURRENT. 42 = %d\n", 42));
                 gc_heap::settings.concurrent = FALSE;
                 return;
             }
@@ -1827,6 +1834,17 @@ static void leave_spin_lock(GCSpinLock *pSpinLock)
 
 #define ASSERT_NOT_HOLDING_SPIN_LOCK(pSpinLock) \
     _ASSERTE((pSpinLock)->holding_thread != GCToEEInterface::GetThread());
+
+inline
+static void ASSERT_SOME_THREAD_HOLDING_SPIN_LOCK(GCSpinLock* pSpinLock) {
+    _ASSERTE(pSpinLock->holding_thread > 0);
+    // assert(!pSpinLock->released_by_gc_p); // Wrong, this is only set the first time it's released, not before
+    //Thread* thread = pSpinLock->holding_thread;
+    //for (gc_heap* hp : hps)
+    //    if (thread == hp->thread)
+    //        return;
+    //assert(false)
+}
 
 #else //_DEBUG
 
@@ -6320,6 +6338,7 @@ void gc_mechanisms::init_mechanisms()
     loh_compaction = FALSE;
 #endif //FEATURE_LOH_COMPACTION
     heap_expansion = FALSE;
+    dprintf (PRINTME, ("settings `concurrent = False` in init_mechanisms"));
     concurrent = FALSE;
     demotion = FALSE;
     elevation_reduced = FALSE;
@@ -16660,6 +16679,43 @@ BOOL gc_heap::should_proceed_with_gc()
     return TRUE;
 }
 
+void gc_heap::suspend_ee_after_resetting_bgc_threads_sync_event()
+{
+#ifdef MULTIPLE_HEAPS
+    if (heap_number == 0)
+    {
+        suspend_EE();
+        bgc_threads_sync_event.Set();
+    }
+    else
+    {
+        bgc_threads_sync_event.Wait(INFINITE, FALSE);
+        // was dprintf(2, ...)
+        dprintf (PRINTME, ("bgc_threads_sync_event is signalled"));
+    }
+#else
+    suspend_EE();
+#endif //MULTIPLE_HEAPS
+}
+
+void gc_heap::restart_ee_after_resetting_bgc_threads_sync_event()
+{
+#ifdef MULTIPLE_HEAPS
+    if (heap_number == 0)
+    {
+        restart_EE();
+        bgc_threads_sync_event.Set();
+    }
+    else
+    {
+        bgc_threads_sync_event.Wait(INFINITE, FALSE);
+        dprintf (2, ("bgc_threads_sync_event is signalled"));
+    }
+#else
+    restart_EE();
+#endif //MULTIPLE_HEAPS
+}
+
 //internal part of gc used by the serial and concurrent version
 void gc_heap::gc1()
 {
@@ -16978,20 +17034,8 @@ void gc_heap::gc1()
                 dprintf(2, ("Joining BGC threads to suspend EE for verify heap"));
                 bgc_t_join.restart();
             }
-            if (heap_number == 0)
-            {
-                suspend_EE();
-                bgc_threads_sync_event.Set();
-            }
-            else
-            {
-                bgc_threads_sync_event.Wait(INFINITE, FALSE);
-                dprintf (2, ("bgc_threads_sync_event is signalled"));
-            }
-#else
-            suspend_EE();
 #endif //MULTIPLE_HEAPS
-
+            suspend_ee_after_resetting_bgc_threads_sync_event();
             //fix the allocation area so verify_heap can proceed.
             fix_allocation_contexts (FALSE);
         }
@@ -17034,20 +17078,8 @@ void gc_heap::gc1()
                 dprintf(2, ("Joining BGC threads to restart EE after verify heap"));
                 bgc_t_join.restart();
             }
-            if (heap_number == 0)
-            {
-                restart_EE();
-                bgc_threads_sync_event.Set();
-            }
-            else
-            {
-                bgc_threads_sync_event.Wait(INFINITE, FALSE);
-                dprintf (2, ("bgc_threads_sync_event is signalled"));
-            }
-#else
-            restart_EE();
 #endif //MULTIPLE_HEAPS
-
+            restart_ee_after_resetting_bgc_threads_sync_event ();
             disable_preemptive (cooperative_mode);
         }
 #endif //BACKGROUND_GC
@@ -18152,6 +18184,7 @@ void gc_heap::garbage_collect (int n)
             ((settings.pause_mode == pause_interactive) || (settings.pause_mode == pause_sustained_low_latency)))
         {
             keep_bgc_threads_p = TRUE;
+            dprintf (PRINTME, ("SETTINGS.CONCURRENT = TRUE, garbage_collect\n"));
             c_write (settings.concurrent,  TRUE);
         }
 #endif //BACKGROUND_GC
@@ -18315,6 +18348,7 @@ void gc_heap::garbage_collect (int n)
             else
             {
                 settings.compaction = TRUE;
+                dprintf (PRINTME, ("SETTINGS.CONCURRENT = FALSE, garbage_collect\n"));
                 c_write (settings.concurrent, FALSE);
             }
 
@@ -22936,6 +22970,7 @@ void gc_heap::record_interesting_data_point (interesting_data_point idp)
 #endif //_PREFAST_
 void gc_heap::plan_phase (int condemned_gen_number)
 {
+    assert (current_c_gc_state != c_gc_state_finalizable_scanning);
     size_t old_gen2_allocated = 0;
     size_t old_gen2_size = 0;
 
@@ -26136,6 +26171,7 @@ void gc_heap::copy_cards_range (uint8_t* dest, uint8_t* src, size_t len, BOOL co
 inline
 void  gc_heap::gcmemcopy (uint8_t* dest, uint8_t* src, size_t len, BOOL copy_cards_p)
 {
+    assert (current_c_gc_state != c_gc_state_finalizable_scanning);
     if (dest != src)
     {
 #ifdef BACKGROUND_GC
@@ -27229,6 +27265,28 @@ void gc_heap::decommit_mark_array_by_seg (heap_segment* seg)
     }
 }
 
+void gc_heap::lock_before_concurrent_finalization()
+{
+#ifdef _DEBUG
+    ASSERT_SOME_THREAD_HOLDING_SPIN_LOCK(&gc_lock);
+#endif
+
+    // TODO: This actually has no effect
+    recursive_gc_sync::begin_background();
+
+    //TODO: ensure all WeakHandle.Target calls are locked
+}
+
+void gc_heap::unlock_after_concurrent_finalization()
+{
+#ifdef _DEBUG
+    ASSERT_SOME_THREAD_HOLDING_SPIN_LOCK(&gc_lock);
+#endif
+
+    // TODO: This actually has no effect
+    recursive_gc_sync::end_background();
+}
+
 void gc_heap::background_mark_phase ()
 {
     verify_mark_array_cleared();
@@ -27239,7 +27297,7 @@ void gc_heap::background_mark_phase ()
     sc.concurrent = FALSE;
 
     THREAD_FROM_HEAP;
-    BOOL cooperative_mode = TRUE;
+    BOOL cooperative_mode = TRUE; // TODO: I don't see a use, is this dead code?
 #ifndef MULTIPLE_HEAPS
     const int thread = heap_number;
 #endif //!MULTIPLE_HEAPS
@@ -27665,21 +27723,54 @@ void gc_heap::background_mark_phase ()
         concurrent_print_time_delta ("NR GcShortWeakPtrScan");
     }
 
+    const bool CONCURRENT_FINALIZATION = GCConfig::GetGCConcurrentFinalization();
+
+    // Hmm. Preemptive gcs are disabled, but we hold the GC lock so they won't actually happen, right?
+    assert (!GCToEEInterface::IsPreemptiveGCDisabled ());
+
     {
+        if (CONCURRENT_FINALIZATION)
+        {
+            // Every heap should reset every generation (and do it while EE is still suspended)
+            reset_every_generation();
+        }
+
 #ifdef MULTIPLE_HEAPS
         bgc_t_join.join(this, gc_join_scan_finalization);
         if (bgc_t_join.joined())
         {
-            dprintf(3, ("Joining BGC threads for finalization"));
-            bgc_t_join.restart();
+#endif // MULTIPLE_HEAPS
+
+            assert (current_c_gc_state == c_gc_state_marking);
+            current_c_gc_state = c_gc_state_finalizable_scanning;
+
+            if (CONCURRENT_FINALIZATION)
+            {
+                dprintf (PRINTME, ("Locking for concurrent finalization"));
+                // Restart EE, but don't allow it to do any GC.
+                lock_before_concurrent_finalization ();
+            }
+
+#ifdef MULTIPLE_HEAPS
+            bgc_threads_sync_event.Reset();
+            dprintf (3, ("Joining BGC threads for finalization"));
+            bgc_t_join.restart ();
         }
 #endif //MULTIPLE_HEAPS
+
+        if (CONCURRENT_FINALIZATION)
+        {
+            restart_ee_after_resetting_bgc_threads_sync_event ();
+        }
 
         //Handle finalization.
         dprintf(3,("Marking finalization data"));
         //concurrent_print_time_delta ("bgc joined to mark finalization");
         concurrent_print_time_delta ("NRj");
 
+// Uncommenting these lines causes:
+// Assert failure(PID 22788 [0x00005904], Thread: 18940 [0x49fc]): dbgOnly_IsSpecialEEThread() || GCToEEInterface::GetThread() == 0 || GCToEEInterface::IsPreemptiveGCDisabled()
+//    File: C:\Users\anhans\coreclr\src\gc\gc.cpp Line: 39375
 //        finalize_queue->EnterFinalizeLock();
         finalize_queue->ScanForFinalization (background_promote, max_generation, FALSE, __this);
 //        finalize_queue->LeaveFinalizeLock();
@@ -27687,13 +27778,44 @@ void gc_heap::background_mark_phase ()
         concurrent_print_time_delta ("NRF");
     }
 
-    dprintf (2, ("before NR 2nd Hov count: %d", bgc_overflow_count));
+#ifdef MULTIPLE_HEAPS
+    bgc_t_join.join(this, gc_join_after_background_scanning);
+    if (bgc_t_join.joined())
+    {
+        // Maybe it's OK to just leave current_c_gc_state as c_gc_state_finalizable_scanning???
+        // The EE remains suspended through to background_sweep(), when we set it to c_gc_state_planning.
+#endif
+
+        assert (current_c_gc_state == c_gc_state_finalizable_scanning);
+        current_c_gc_state = c_gc_state_marking;
+
+        if (CONCURRENT_FINALIZATION)
+        {
+            dprintf(PRINTME, ("Unlocking after concurrent finalization\n"));
+            unlock_after_concurrent_finalization ();
+            dprintf(PRINTME, ("unlocked\n"));
+        }
+
+#ifdef MULTIPLE_HEAPS
+        bgc_threads_sync_event.Reset();
+        dprintf(PRINTME, ("Joining BGC threads after background scanning"));
+        bgc_t_join.restart();
+    }
+#endif
+    if (CONCURRENT_FINALIZATION)
+    {
+        suspend_ee_after_resetting_bgc_threads_sync_event ();
+        dprintf(PRINTME, ("EE suspended\n"));
+    }
+
+
+    dprintf (PRINTME, ("before NR 2nd Hov count: %d", bgc_overflow_count));
     bgc_overflow_count = 0;
 
     // Scan dependent handles again to promote any secondaries associated with primaries that were promoted
     // for finalization. As before background_scan_dependent_handles will also process any mark stack
     // overflow.
-    dprintf (2, ("2nd dependent handle scan and process mark overflow"));
+    dprintf (PRINTME, ("2nd dependent handle scan and process mark overflow"));
     background_scan_dependent_handles (&sc);
     //concurrent_print_time_delta ("2nd nonconcurrent dependent handle scan and process mark overflow");
     concurrent_print_time_delta ("NR 2nd Hov");
@@ -27702,7 +27824,7 @@ void gc_heap::background_mark_phase ()
     bgc_t_join.join(this, gc_join_null_dead_long_weak);
     if (bgc_t_join.joined())
     {
-        dprintf(2, ("Joining BGC threads for weak pointer deletion"));
+        dprintf(PRINTME, ("Joining BGC threads for weak pointer deletion"));
         bgc_t_join.restart();
     }
 #endif //MULTIPLE_HEAPS
@@ -27716,7 +27838,7 @@ void gc_heap::background_mark_phase ()
     if (bgc_t_join.joined())
 #endif //MULTIPLE_HEAPS
     {
-        dprintf (2, ("calling GcWeakPtrScanBySingleThread"));
+        dprintf (PRINTME, ("calling GcWeakPtrScanBySingleThread"));
         // scan for deleted entries in the syncblk cache
         GCScan::GcWeakPtrScanBySingleThread (max_generation, max_generation, &sc);
         concurrent_print_time_delta ("NR GcWeakPtrScanBySingleThread");
@@ -27728,7 +27850,7 @@ void gc_heap::background_mark_phase ()
 
     gen0_bricks_cleared = FALSE;
 
-    dprintf (2, ("end of bgc mark: loh: %d, soh: %d", 
+    dprintf (PRINTME, ("end of bgc mark: loh: %d, soh: %d", 
                  generation_size (max_generation + 1), 
                  generation_sizes (generation_of (max_generation))));
 
@@ -27782,11 +27904,11 @@ void gc_heap::background_mark_phase ()
         mark_time = finish - start;
 #endif //TIME_GC
 
-    dprintf (2, ("end of bgc mark: gen2 free list space: %d, free obj space: %d", 
+    dprintf (PRINTME, ("end of bgc mark: gen2 free list space: %d, free obj space: %d", 
         generation_free_list_space (generation_of (max_generation)), 
         generation_free_obj_space (generation_of (max_generation))));
 
-    dprintf(2,("---- (GC%d)End of background mark phase ----", VolatileLoad(&settings.gc_index)));
+    dprintf(PRINTME,("---- (GC%d)End of background mark phase ----", VolatileLoad(&settings.gc_index)));
 }
 
 void
@@ -28508,6 +28630,7 @@ void gc_heap::start_c_gc()
     assert (background_gc_done_event.IsValid());
     assert (bgc_start_event.IsValid());
 
+    dprintf (PRINTME, ("start_c_gc called\n"));
 //Need to make sure that the gc thread is in the right place.
     background_gc_done_event.Wait(INFINITE, FALSE);
     background_gc_done_event.Reset();
@@ -28545,6 +28668,7 @@ void gc_heap::kill_gc_thread()
     // In the first stage, we do minimum work, and call ExitProcess at the end.
     // In the secodn stage, we have the Loader lock and only one thread is
     // alive.  Hence we do not need to kill gc thread.
+    dprintf (PRINTME, ("kill_gc_thread\n"));
     background_gc_done_event.CloseEvent();
     gc_lh_block_event.CloseEvent();
     bgc_start_event.CloseEvent();
@@ -28681,9 +28805,11 @@ void gc_heap::bgc_thread_function()
             fire_pevents();
 #endif //MULTIPLE_HEAPS
 
+            dprintf (PRINTME, ("SETTINGS.CONCURRENT = FALSE, bgc_thread_function\n"));
             c_write (settings.concurrent, FALSE);
             recursive_gc_sync::end_background();
             keep_bgc_threads_p = FALSE;
+            dprintf (PRINTME, ("Setting background_gc_done_event from gc_thread_function\n"));
             background_gc_done_event.Set();
 
             dprintf (SPINLOCK_LOG, ("bgc Lgc"));
@@ -33608,7 +33734,9 @@ CObjectHeader* gc_heap::allocate_large_object (size_t jsize, uint32_t flags, int
 #ifdef BACKGROUND_GC
         //the object has to cover one full mark uint32_t
         assert (size > mark_word_size);
-        if (current_c_gc_state != c_gc_state_free)
+        // TODO: is below the right behavior if in finalizable_scanning?
+        assert (current_c_gc_state != c_gc_state_finalizable_scanning);
+        if (current_c_gc_state != c_gc_state_free && current_c_gc_state != c_gc_state_finalizable_scanning)
         {
             dprintf (3, ("Concurrent allocation of a large object %Ix",
                         (size_t)obj));
@@ -34024,6 +34152,9 @@ void gc_heap::should_check_bgc_mark (heap_segment* seg,
                                      BOOL* check_current_sweep_p,
                                      BOOL* check_saved_sweep_p)
 {
+    // Never have to worry about this, right?
+    assert (current_c_gc_state != c_gc_state_finalizable_scanning);
+
     // the logic for this function must be kept in sync with the analogous function
     // in ToolBox\SOS\Strike\gc.cpp
     *consider_bgc_mark_p = FALSE;
@@ -34222,22 +34353,8 @@ void gc_heap::background_sweep()
         gc_lh_block_event.Reset();
     }
 
-    for (int i = 0; i <= (max_generation + 1); i++)
-    {
-        generation* gen_to_reset = generation_of (i);
-        generation_allocator (gen_to_reset)->clear();
-        generation_free_list_space (gen_to_reset) = 0;
-        generation_free_obj_space (gen_to_reset) = 0;
-        generation_free_list_allocated (gen_to_reset) = 0;
-        generation_end_seg_allocated (gen_to_reset) = 0;
-        generation_condemned_allocated (gen_to_reset) = 0; 
-        generation_sweep_allocated (gen_to_reset) = 0; 
-        //reset the allocation so foreground gc can allocate into older generation
-        generation_allocation_pointer (gen_to_reset)= 0;
-        generation_allocation_limit (gen_to_reset) = 0;
-        generation_allocation_segment (gen_to_reset) = heap_segment_rw (generation_start_segment (gen_to_reset));
-    }
-
+    reset_every_generation();
+    
     FIRE_EVENT(BGC2ndNonConEnd);
 
     loh_alloc_thread_count = 0;
@@ -35567,6 +35684,25 @@ void gc_heap::clear_all_mark_array()
     //printf ("took %Id ms to clear %Id bytes\n", end_time, num_dwords_written*sizeof(uint32_t));
 
 #endif //MARK_ARRAY
+}
+
+void gc_heap::reset_every_generation()
+{
+    for (int i = 0; i <= (max_generation + 1); i++)
+    {
+        generation* gen_to_reset = generation_of (i);
+        generation_allocator (gen_to_reset)->clear();
+        generation_free_list_space (gen_to_reset) = 0;
+        generation_free_obj_space (gen_to_reset) = 0;
+        generation_free_list_allocated (gen_to_reset) = 0;
+        generation_end_seg_allocated (gen_to_reset) = 0;
+        generation_condemned_allocated (gen_to_reset) = 0;
+        generation_sweep_allocated (gen_to_reset) = 0; 
+        //reset the allocation so foreground gc can allocate into older generation
+        generation_allocation_pointer (gen_to_reset) = 0;
+        generation_allocation_limit (gen_to_reset) = 0;
+        generation_allocation_segment (gen_to_reset) = heap_segment_rw (generation_start_segment (gen_to_reset));
+    }
 }
 
 #endif //BACKGROUND_GC 

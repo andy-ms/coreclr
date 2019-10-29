@@ -145,8 +145,8 @@ inline void FATAL_GC_ERROR()
 
 //#define STRESS_PINNING    //Stress pinning by pinning randomly
 
-//#define TRACE_GC          //debug trace gc operation
-//#define SIMPLE_DPRINTF
+#define TRACE_GC          //debug trace gc operation
+#define SIMPLE_DPRINTF
 
 //#define TIME_GC           //time allocation and garbage collection
 //#define TIME_WRITE_WATCH  //time GetWriteWatch and ResetWriteWatch calls
@@ -276,6 +276,8 @@ const int policy_expand  = 2;
 
 #ifdef SIMPLE_DPRINTF
 
+#define PRINTME 1337
+
 //#define dprintf(l,x) {if (trace_gc && ((l<=print_level)||gc_heap::settings.concurrent)) {printf ("\n");printf x ; fflush(stdout);}}
 void GCLog (const char *fmt, ... );
 //#define dprintf(l,x) {if (trace_gc && (l<=print_level)) {GCLog x;}}
@@ -283,7 +285,8 @@ void GCLog (const char *fmt, ... );
 //#define dprintf(l,x) {if (l == DT_LOG_0) {GCLog x;}}
 //#define dprintf(l,x) {if (trace_gc && ((l <= 2) || (l == BGC_LOG) || (l==GTC_LOG))) {GCLog x;}}
 //#define dprintf(l,x) {if ((l == 1) || (l == 2222)) {GCLog x;}}
-#define dprintf(l,x) {if ((l <= 1) || (l == GTC_LOG)) {GCLog x;}}
+//#define dprintf(l,x) {if ((l <= 1) || (l == GTC_LOG)) {GCLog x;}}
+#define dprintf(l, x) {if (l == PRINTME) {GCLog x;}}
 //#define dprintf(l,x) {if (l == HEAP_BALANCE_LOG) {GCLog x;}}
 //#define dprintf(l,x) {if ((l==GTC_LOG) || (l <= 1)) {GCLog x;}}
 //#define dprintf(l,x) {if (trace_gc && ((l <= print_level) || (l==GTC_LOG))) {GCLog x;}}
@@ -2153,6 +2156,10 @@ protected:
     void verify_mark_bits_cleared (uint8_t* obj, size_t s);
     PER_HEAP
     void clear_all_mark_array();
+    // When user code runs alongside a background GC, we want to ensure that that code only allocates to the *end* of each generation, never using free parts.
+    // Then after stopping the EE again, everything in that range will be considered alive.
+    PER_HEAP
+    void reset_every_generation();
 
 #ifdef BGC_SERVO_TUNING
 
@@ -3088,6 +3095,15 @@ protected:
     // if the beginning and ending don't happen to be page aligned.
     PER_HEAP
     void decommit_mark_array_by_seg (heap_segment* seg);
+
+    PER_HEAP_ISOLATED
+    void lock_before_concurrent_finalization ();
+    PER_HEAP_ISOLATED
+    void unlock_after_concurrent_finalization ();
+    PER_HEAP
+    void suspend_ee_after_resetting_bgc_threads_sync_event ();
+    PER_HEAP
+    void restart_ee_after_resetting_bgc_threads_sync_event ();
 
     PER_HEAP
     void background_mark_phase();

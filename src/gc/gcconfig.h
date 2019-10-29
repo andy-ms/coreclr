@@ -121,6 +121,8 @@ public:
         "Specifies a hard limit for the GC heap")                                                \
     INT_CONFIG(GCHeapHardLimitPercent, "GCHeapHardLimitPercent", 0,                              \
         "Specifies the GC heap usage as a percentage of the total memory")                       \
+    INT_CONFIG(GCConcurrentFinalization, "GCConcurrentFinalization", 0,                          \
+        "Scans the finalization queue in BGC concurrent with user code")                         \
     STRING_CONFIG(LogFile,    "GCLogFile",    "Specifies the name of the GC log file")           \
     STRING_CONFIG(ConfigLogFile, "GCConfigLogFile",                                              \
         "Specifies the name of the GC config log file")                                          \

@@ -1109,6 +1109,12 @@ bool GCToEEInterface::GetIntConfigValue(const char* key, int64_t* value)
         return true;
     }
 
+    if (strcmp(key, "GCConcurrentFinalization") == 0)
+    {
+        *value = g_pConfig->GetGCConcurrentFinalization();
+        return true;
+    }
+
     if (strcmp(key, "GCLOHThreshold") == 0)
     {
         *value = g_pConfig->GetGCLOHThreshold();

@@ -819,6 +819,7 @@ fTrackDynamicMethodDebugInfo = CLRConfig::GetConfigValue(CLRConfig::UNSUPPORTED_
         ? static_cast<size_t>(ullHeapHardLimit)
         : ClrSafeInt<size_t>::MaxInt();
     iGCHeapHardLimitPercent = Configuration::GetKnobDWORDValue(W("System.GC.HeapHardLimitPercent"), 0);
+    iGCConcurrentFinalization = Configuration::GetKnobDWORDValue(W("System.GC.ConcurrentFinalization"), CLRConfig::EXTERNAL_GCConcurrentFinalization);
 
     if (g_IGCHoardVM)
         iGCHoardVM = g_IGCHoardVM;
