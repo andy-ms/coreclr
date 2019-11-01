@@ -5141,10 +5141,73 @@ extern "C" uint64_t __rdtsc();
 
 // We may not be on contiguous numa nodes so need to store
 // the node index as well.
-struct node_heap_count
+//struct node_heap_count
+//{
+//    int node_no;
+//    int heap_count;
+//};
+
+using heap_no_t = uint16_t;
+using proc_no_t = uint16_t;
+using numa_no_t = uint16_t;
+
+struct range
 {
-    int node_no;
-    int heap_count;
+    heap_no_t low; // inclusive
+    heap_no_t high; // exclusive
+
+    bool is_zero () const {
+        return low == 0 && high == 0;
+    }
+
+    size_t count () const {
+        assert (!is_zero ());
+        // Inclusive, so always at least 1
+        return high - low + 1;
+    }
+};
+
+
+// TODO: does this exist already?
+template <typename T>
+class slice
+{
+    T* _begin;
+    size_t _size;
+
+public:
+    static slice from_array (T* array, size_t low, size_t high) {
+        assert(high >= low);
+        return { array + low, high - low };
+    }
+
+    size_t size () { return _size; }
+    T* begin () { return _begin; }
+    T* end () { return _begin + _size; }
+}
+
+/** Maps a number to a set of ranges. */
+struct ranges_map
+{
+    // Private range storage
+    range ranges[MAX_SUPPORTED_CPUS];
+    // Maps numa node number to the first range
+    // Will also have an entry for the max numa node + 1, indicating where the previous ended
+    uint16_t numa_node_to_first_range[MAX_SUPPORTED_CPUS];
+    static_assert((1 << 16) > MAX_SUPPORTED_CPUS);
+
+    slice<range> ranges_for_numa_node (numa_no_t nn) {
+        return slice::from_array (numa_node_to_first_range[nn], numa_node_to_first_range[nn + 1]);
+    }
+
+    node_heap_count heap_count_for_node (numa_no_t nn) const {
+        size_t count = 0;
+        for (const range& r : ranges_for_numa_node (nn))
+        {
+            count += r.count ();
+        }
+        return count;
+    }
 };
 
 class heap_select
@@ -5155,15 +5218,18 @@ public:
     static unsigned n_sniff_buffers;
     static unsigned cur_sniff_index;
 
-    static uint16_t proc_no_to_heap_no[MAX_SUPPORTED_CPUS];
-    static uint16_t heap_no_to_proc_no[MAX_SUPPORTED_CPUS];
-    static uint16_t heap_no_to_numa_node[MAX_SUPPORTED_CPUS];
-    static uint16_t proc_no_to_numa_node[MAX_SUPPORTED_CPUS];
-    static uint16_t numa_node_to_heap_map[MAX_SUPPORTED_CPUS+4];
+    static heap_no_t proc_no_to_heap_no[MAX_SUPPORTED_CPUS];
+    static proc_no_t heap_no_to_proc_no[MAX_SUPPORTED_CPUS];
+    static numa_no_t heap_no_to_numa_node[MAX_SUPPORTED_CPUS];
+    static numa_no_t proc_no_to_numa_node[MAX_SUPPORTED_CPUS];
+    //static heap_no_t numa_node_to_heap_map[MAX_SUPPORTED_CPUS+4];
+    static ranges_map numa_node_to_ranges;
+
     // Note this is the total numa nodes GC heaps are on. There might be
     // more on the machine if GC threads aren't using all of them.
     static uint16_t total_numa_nodes;
-    static node_heap_count heaps_on_node[MAX_SUPPORTED_NODES];
+    //Just use numa_node_to_ranges
+    //static node_heap_count heaps_on_node[MAX_SUPPORTED_NODES];
 
     static int access_time(uint8_t *sniff_buffer, int heap_number, unsigned sniff_index, unsigned n_sniff_buffers)
     {
@@ -5306,6 +5372,77 @@ public:
         proc_no_to_numa_node[proc_no] = numa_node;
     }
 
+    static void init_numa_node_to_ranges(int nheaps)
+    {
+        size_t numa_no_to_range_counts[MAX_SUPPORTED_CPUS];
+        memset (numa_no_to_range_counts, 0, sizeof (numa_no_to_range_counts));
+
+        for (size_t hp = 0; hp < nheaps; hp++)
+        {
+            const numa_no_t nn = heap_no_to_numa_node[hp];
+            // Only do this for the first node in the range
+            if (hp == 0 || nn != heap_no_to_numa_node[hp-1])
+            {
+                numa_no_to_range_counts[nn]++;
+            }
+        }
+
+        // Now we have range counts, can get results for each
+        memset (numa_node_to_ranges.ranges, 0, sizeof(range) * MAX_SUPPORTED_CPUS);
+        memset (numa_node_to_ranges.numa_node_to_first_range, 0, sizeof(uint16_t) * MAX_SUPPORTED_CPUS);
+
+        // Using <= as we will have an after-last entry to give the end of the last range.
+        for (size_t nn = 0, range_i = 0; nn <= total_numa_nodes; nn++)
+        {
+            numa_node_to_ranges.numa_node_to_first_range[nn] = range_i;
+            range_i += numa_no_to_range_counts[nn];
+        }
+
+        // Now write out all the ranges
+        for (size_t hp = 0; h < nheaps; hp++)
+        {
+            const numa_no_t nn = heap_no_to_numa_node[hp];
+            //TODO:HANDLE THIS
+            assert(nn != NUMA_NODE_UNDEFINED);
+            const numa_no_t prev_nn = heap_no_to_numa_node[hp - 1];
+            //TODO:HANDLE THIS
+            assert(prev_nn != NUMA_NODE_UNDEFINED);
+            if (hp == 0 || nn != prev_nn)
+            {
+                // First, fill in the end of the previous range.
+                if (hp != 0)
+                {
+                    numa_node_to_ranges.numa_node_to_first_range[nn + 1].high = hp - 1;
+                }
+
+                // Find the first range to write to.
+                size_t range_i = numa_node_to_ranges.numa_node_to_first_range[nn];
+                size_t last_range_i = numa_node_to_ranges.numa_node_to_first_range[nn + 1];
+                while (!numa_node_to_ranges.ranges[range_i].is_zero())
+                {
+                    range_i++;
+                    assert(range_i < last_range_i);
+                }
+
+                // Will fill in the end later.
+                numa_node_to_ranges.ranges[range_i] = range{hp, 0};
+            }
+        }
+
+        // Fill in the end of the last range.
+        numa_node_to_ranges.numa_node_to_first_range[heap_no_to_numa_node[nheaps - 1]].last = nheaps - 1;
+
+        // Should be no zero ranges.
+        for (size_t nn = 0; nn < total_numa_nodes; nn++)
+        {
+            for (const range& r : numa_node_to_ranges[nn].ranges_for_numa_node(nn))
+            {
+                assert(!r.is_zero());
+            }
+        }
+    }
+
+    /*
     static void init_numa_node_to_heap_map(int nheaps)
     {
         // Called right after GCHeap::Init() for each heap
@@ -5338,6 +5475,7 @@ public:
         numa_node_to_heap_map[heap_no_to_numa_node[nheaps-1] + 1] = (uint16_t)nheaps; //mark the end with nheaps
         total_numa_nodes++;
     }
+    */
 
     // TODO: curently this doesn't work with GCHeapAffinitizeMask/GCHeapAffinitizeRanges
     // because the heaps may not be on contiguous active procs.
@@ -5445,8 +5583,8 @@ uint16_t heap_select::heap_no_to_proc_no[MAX_SUPPORTED_CPUS];
 uint16_t heap_select::heap_no_to_numa_node[MAX_SUPPORTED_CPUS];
 uint16_t heap_select::proc_no_to_numa_node[MAX_SUPPORTED_CPUS];
 uint16_t heap_select::numa_node_to_heap_map[MAX_SUPPORTED_CPUS+4];
-uint16_t  heap_select::total_numa_nodes;
-node_heap_count heap_select::heaps_on_node[MAX_SUPPORTED_NODES];
+uint16_t heap_select::total_numa_nodes;
+//node_heap_count heap_select::heaps_on_node[MAX_SUPPORTED_NODES];
 
 #ifdef HEAP_BALANCE_INSTRUMENTATION
 // This records info we use to look at effect of different strategies
@@ -36741,7 +36879,7 @@ HRESULT GCHeap::Initialize()
         }
     }
 
-    heap_select::init_numa_node_to_heap_map (nhp);
+    heap_select::init_numa_node_to_ranges (nhp);
 
     // If we have more active processors than heaps we still want to initialize some of the
     // mapping for the rest of the active processors because user threads can still run on
