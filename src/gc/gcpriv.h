@@ -1387,6 +1387,9 @@ protected:
     PER_HEAP
     void walk_finalize_queue (fq_walk_fn fn);
 
+    PER_HEAP
+    bool register_for_finalization (Object* object, size_t size);
+
 #if defined(BACKGROUND_GC) && defined(FEATURE_EVENT_TRACE)
     PER_HEAP
     void walk_survivors_for_bgc (void* profiling_context, record_surv_fn fn);
@@ -2156,10 +2159,13 @@ protected:
     void verify_mark_bits_cleared (uint8_t* obj, size_t s);
     PER_HEAP
     void clear_all_mark_array();
-    // When user code runs alongside a background GC, we want to ensure that that code only allocates to the *end* of each generation, never using free parts.
-    // Then after stopping the EE again, everything in that range will be considered alive.
+    // When user code runs alongside a background GC,
+    // we want to ensure that that code only allocates to the *end* of each generation, never using free parts.
+    // Then after stopping the EE again, we call mark_all_new_objects_live so everything in that range will be considered alive.
     PER_HEAP
-    void reset_every_generation();
+    void reset_every_generation ();
+    PER_HEAP
+    void mark_all_new_objects_live ();
 
 #ifdef BGC_SERVO_TUNING
 
@@ -4404,7 +4410,8 @@ public:
     void LeaveFinalizeLock();
     bool RegisterForFinalization (int gen, Object* obj, size_t size=0);
     Object* GetNextFinalizableObject (BOOL only_non_critical=FALSE);
-    BOOL ScanForFinalization (promote_func* fn, int gen,BOOL mark_only_p, gc_heap* hp);
+    void EnableFinalizationIfConcurrentFoundFinalizers (gc_heap* hp);
+    BOOL ScanForFinalization (promote_func* fn, int gen,  gc_heap* hp);
     void RelocateFinalizationData (int gen, gc_heap* hp);
     void WalkFReachableObjects (fq_walk_fn fn);
     void GcScanRoots (promote_func* fn, int hn, ScanContext *pSC);

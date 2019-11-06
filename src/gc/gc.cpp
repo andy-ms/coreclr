@@ -16788,8 +16788,23 @@ void gc_heap::gc1()
             background_mark_phase();
             free_list_info (max_generation, "after mark phase");
             
+#ifdef VERIFY_HEAP
+            dprintf (PRINTME, ("verify heap after free_list_info"));
+            verify_heap (/*begin_gc_p*/ FALSE); // TODO:KILL
+#endif
+
             background_sweep();
+
+#ifdef VERIFY_HEAP
+            dprintf (PRINTME, ("verify heap after background_sweep"));
+            verify_heap (/*begin_gc_p*/ FALSE); // TODO:KILL
+#endif
             free_list_info (max_generation, "after sweep phase");
+
+#ifdef VERIFY_HEAP
+            dprintf (PRINTME, ("verify heap after second free_list_info"));
+            verify_heap (/*begin_gc_p*/ FALSE); // TODO:KILL
+#endif
         }
         else
 #endif //BACKGROUND_GC
@@ -21342,7 +21357,12 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
 
 #ifdef FEATURE_PREMORTEM_FINALIZATION
     dprintf (3, ("Finalize marking"));
-    finalize_queue->ScanForFinalization (GCHeap::Promote, condemned_gen_number, mark_only_p, __this);
+    finalize_queue->ScanForFinalization (GCHeap::Promote, condemned_gen_number, __this);
+    if (!mark_only_p)
+    {
+        finalize_queue->EnableFinalizationIfConcurrentFoundFinalizers (__this);
+    }
+
 
     GCToEEInterface::DiagWalkFReachableObjects(__this);
 #endif // FEATURE_PREMORTEM_FINALIZATION
@@ -22174,18 +22194,52 @@ retry:
 }
 
 inline
+static uint8_t* next_object (uint8_t* o)
+{
+    return o + Align (size (o));
+}
+
+inline
 void gc_heap::seg_clear_mark_bits (heap_segment* seg)
 {
-    uint8_t* o = heap_segment_mem (seg);
-    while (o < heap_segment_allocated (seg))
+    for (uint8_t* o = heap_segment_mem (seg); o < heap_segment_allocated (seg); o = next_object (o))
     {
         if (marked (o))
         {
             clear_marked (o);
         }
-        o = o  + Align (size (o));
     }
 }
+
+/*
+inline
+void gc_heap::seg_set_mark_bits (heap_segment* seg)
+{
+    // Note: no need to recursively mark objects referenced by these.
+    // This is part of marking *all* new objects as live,
+    // thus anything they reference is live already or will be marked.
+
+    for (uint8_t* o = heap_segment_mem (seg); o < heap_segment_allocated (seg); o = next_object (o))
+    {
+        if (!marked (o))
+        {
+            set_marked (o);
+        }
+    }
+
+    // Now assert that everything they reference is live.
+#ifdef _DEBUG
+    for (uint8_t* o = heap_segment_mem (seg); o < heap_segment_allocated (seg); o = next_object (o))
+    {
+        go_through_object_cl (method_table(o), o, size(o), ppslot,
+        {
+            uint8_t* referenced = *ppslot;
+            assert(marked(referenced));
+        });
+    }
+#endif //_DEBUG
+}
+*/
 
 #ifdef FEATURE_BASICFREEZE
 void gc_heap::sweep_ro_segments (heap_segment* start_seg)
@@ -27723,16 +27777,16 @@ void gc_heap::background_mark_phase ()
         concurrent_print_time_delta ("NR GcShortWeakPtrScan");
     }
 
-    const bool CONCURRENT_FINALIZATION = GCConfig::GetGCConcurrentFinalization();
+    const bool concurrent_finalization_p = GCConfig::GetGCConcurrentFinalization();
 
     // Hmm. Preemptive gcs are disabled, but we hold the GC lock so they won't actually happen, right?
     assert (!GCToEEInterface::IsPreemptiveGCDisabled ());
 
     {
-        if (CONCURRENT_FINALIZATION)
+        if (concurrent_finalization_p)
         {
             // Every heap should reset every generation (and do it while EE is still suspended)
-            reset_every_generation();
+            reset_every_generation ();
         }
 
 #ifdef MULTIPLE_HEAPS
@@ -27744,7 +27798,7 @@ void gc_heap::background_mark_phase ()
             assert (current_c_gc_state == c_gc_state_marking);
             current_c_gc_state = c_gc_state_finalizable_scanning;
 
-            if (CONCURRENT_FINALIZATION)
+            if (concurrent_finalization_p)
             {
                 dprintf (PRINTME, ("Locking for concurrent finalization"));
                 // Restart EE, but don't allow it to do any GC.
@@ -27758,7 +27812,7 @@ void gc_heap::background_mark_phase ()
         }
 #endif //MULTIPLE_HEAPS
 
-        if (CONCURRENT_FINALIZATION)
+        if (concurrent_finalization_p)
         {
             restart_ee_after_resetting_bgc_threads_sync_event ();
         }
@@ -27772,7 +27826,7 @@ void gc_heap::background_mark_phase ()
 // Assert failure(PID 22788 [0x00005904], Thread: 18940 [0x49fc]): dbgOnly_IsSpecialEEThread() || GCToEEInterface::GetThread() == 0 || GCToEEInterface::IsPreemptiveGCDisabled()
 //    File: C:\Users\anhans\coreclr\src\gc\gc.cpp Line: 39375
 //        finalize_queue->EnterFinalizeLock();
-        finalize_queue->ScanForFinalization (background_promote, max_generation, FALSE, __this);
+        finalize_queue->ScanForFinalization (background_promote, max_generation, __this);
 //        finalize_queue->LeaveFinalizeLock();
 
         concurrent_print_time_delta ("NRF");
@@ -27789,9 +27843,9 @@ void gc_heap::background_mark_phase ()
         assert (current_c_gc_state == c_gc_state_finalizable_scanning);
         current_c_gc_state = c_gc_state_marking;
 
-        if (CONCURRENT_FINALIZATION)
+        if (concurrent_finalization_p)
         {
-            dprintf(PRINTME, ("Unlocking after concurrent finalization\n"));
+            dprintf(PRINTME, ("Unlocking after concurrent finalization"));
             unlock_after_concurrent_finalization ();
             dprintf(PRINTME, ("unlocked\n"));
         }
@@ -27802,11 +27856,20 @@ void gc_heap::background_mark_phase ()
         bgc_t_join.restart();
     }
 #endif
-    if (CONCURRENT_FINALIZATION)
+
+    if (concurrent_finalization_p)
     {
+        dprintf (PRINTME, ("suspending EE after concurrent finalization"));
         suspend_ee_after_resetting_bgc_threads_sync_event ();
-        dprintf(PRINTME, ("EE suspended\n"));
+        dprintf(PRINTME, ("EE suspended"));
+
+        // All the gen0 and loh objects added since beginning of concurrent finalization must be marked.
+        // mark_all_new_objects_live ();
     }
+
+    // Previously this happened at end of ScanForFinalization.
+    // Waited to do this until the EE was suspended.
+    finalize_queue->EnableFinalizationIfConcurrentFoundFinalizers (__this);
 
 
     dprintf (PRINTME, ("before NR 2nd Hov count: %d", bgc_overflow_count));
@@ -27895,9 +27958,18 @@ void gc_heap::background_mark_phase ()
         seg = heap_segment_next_rw (seg);
     }
 
+//#ifdef VERIFY_HEAP
+//    verify_heap (/*begin_gc_p*/ FALSE); // TODO:KILL
+//#endif
+
     // We need to void alloc contexts here 'cause while background_ephemeral_sweep is running
     // we can't let the user code consume the left over parts in these alloc contexts.
     repair_allocation_contexts (FALSE);
+
+#ifdef VERIFY_HEAP
+    dprintf (PRINTME, ("verifying heap ..."));
+    verify_heap (/*begin_gc_p*/ FALSE);
+#endif
 
 #ifdef TIME_GC
         finish = GetCycleCount32();
@@ -33736,7 +33808,7 @@ CObjectHeader* gc_heap::allocate_large_object (size_t jsize, uint32_t flags, int
         assert (size > mark_word_size);
         // TODO: is below the right behavior if in finalizable_scanning?
         assert (current_c_gc_state != c_gc_state_finalizable_scanning);
-        if (current_c_gc_state != c_gc_state_free && current_c_gc_state != c_gc_state_finalizable_scanning)
+        if (current_c_gc_state != c_gc_state_free)
         {
             dprintf (3, ("Concurrent allocation of a large object %Ix",
                         (size_t)obj));
@@ -35686,7 +35758,7 @@ void gc_heap::clear_all_mark_array()
 #endif //MARK_ARRAY
 }
 
-void gc_heap::reset_every_generation()
+void gc_heap::reset_every_generation ()
 {
     for (int i = 0; i <= (max_generation + 1); i++)
     {
@@ -35704,6 +35776,88 @@ void gc_heap::reset_every_generation()
         generation_allocation_segment (gen_to_reset) = heap_segment_rw (generation_start_segment (gen_to_reset));
     }
 }
+
+/*
+void gc_heap::mark_all_new_objects_live ()
+{
+    for (int i = 0; i <= (max_generation + 1); i++)
+    {
+        generation* const gen = generation_of (i);
+        heap_segment* const seg = generation_allocation_segment (gen);
+
+        uint8_t* const start = heap_segment_mem (seg);
+        uint8_t* const end = heap_segment_allocated (seg);
+
+        const size_t end_size = generation_end_seg_allocated (gen);
+        assert ((end - start) == end_size);
+
+        if (end > start)
+        {
+            // Only SOH and LOH can get new allocations
+            assert (i == 0 || i == max_generation+1);
+        }
+
+        for (uint8_t* o = start; o < end; o = next_object (o))
+        {
+            if (!marked (o))
+            {
+                set_marked (o);
+            }
+        }
+
+    // Now assert that everything they reference is live.
+#ifdef _DEBUG
+        for (uint8_t* o = heap_segment_mem (seg); o < heap_segment_allocated (seg); o = next_object (o))
+        {
+            go_through_object_cl (method_table(o), o, size(o), ppslot,
+            {
+                uint8_t* referenced = *ppslot;
+                assert(marked(referenced));
+            });
+        }
+#endif //_DEBUG        
+        //while (seg)
+        //{
+        //    seg_set_mark_bits (seg);
+        //}
+
+        //generation* gen = generation_of (i);
+        //// Walk over the generation, mark all as live
+        //how to walk over all objects?
+    }
+}
+*/
+
+/*
+inline
+void gc_heap::seg_set_mark_bits (heap_segment* seg)
+{
+    // Note: no need to recursively mark objects referenced by these.
+    // This is part of marking *all* new objects as live,
+    // thus anything they reference is live already or will be marked.
+
+    for (uint8_t* o = heap_segment_mem (seg); o < heap_segment_allocated (seg); o = next_object (o))
+    {
+        if (!marked (o))
+        {
+            set_marked (o);
+        }
+    }
+
+    // Now assert that everything they reference is live.
+#ifdef _DEBUG
+    for (uint8_t* o = heap_segment_mem (seg); o < heap_segment_allocated (seg); o = next_object (o))
+    {
+        go_through_object_cl (method_table(o), o, size(o), ppslot,
+        {
+            uint8_t* referenced = *ppslot;
+            assert(marked(referenced));
+        });
+    }
+#endif //_DEBUG
+}
+*/
+
 
 #endif //BACKGROUND_GC 
 
@@ -36020,6 +36174,7 @@ gc_heap::verify_heap (BOOL begin_gc_p)
     PREFIX_ASSUME(seg != NULL);
 
     uint8_t*        curr_object = heap_segment_mem (seg);
+    assert (curr_object != nullptr);
     uint8_t*        prev_object = 0;
     uint8_t*        begin_youngest = generation_allocation_start(generation_of(0));
     uint8_t*        end_youngest = heap_segment_allocated (ephemeral_heap_segment);
@@ -36159,6 +36314,8 @@ gc_heap::verify_heap (BOOL begin_gc_p)
 
     while (1)
     {
+        assert (curr_object != nullptr);
+
         // Handle segment transitions
         if (curr_object >= heap_segment_allocated (seg))
         {
@@ -36175,6 +36332,7 @@ gc_heap::verify_heap (BOOL begin_gc_p)
                 should_check_bgc_mark (seg, &consider_bgc_mark_p, &check_current_sweep_p, &check_saved_sweep_p);
 #endif //BACKGROUND_GC
                 curr_object = heap_segment_mem(seg);
+                assert (curr_object != nullptr);
                 prev_object = 0;
                 continue;
             }
@@ -36191,6 +36349,7 @@ gc_heap::verify_heap (BOOL begin_gc_p)
                     should_check_bgc_mark (seg, &consider_bgc_mark_p, &check_current_sweep_p, &check_saved_sweep_p);
 #endif //BACKGROUND_GC
                     curr_object = heap_segment_mem (seg);
+                    assert (curr_object != nullptr);
                     prev_object = 0;
                     large_brick_p = FALSE;
                     align_const = get_alignment_constant (TRUE);
@@ -36231,6 +36390,7 @@ gc_heap::verify_heap (BOOL begin_gc_p)
          //        FATAL_GC_ERROR();
          //}
 
+        assert (curr_object != nullptr);
         size_t s = size (curr_object);
         dprintf (3, ("o: %Ix, s: %d", (size_t)curr_object, s));
         if (s == 0)
@@ -37452,15 +37612,20 @@ bool GCHeap::StressHeap(gc_alloc_context * context)
 }
 
 
+bool gc_heap::register_for_finalization (Object* object, const size_t size) {
 #ifdef FEATURE_PREMORTEM_FINALIZATION
-#define REGISTER_FOR_FINALIZATION(_object, _size) \
-    hp->finalize_queue->RegisterForFinalization (0, (_object), (_size))
-#else // FEATURE_PREMORTEM_FINALIZATION
-#define REGISTER_FOR_FINALIZATION(_object, _size) true
-#endif // FEATURE_PREMORTEM_FINALIZATION
+    // TODO: handle this case (by registering for finalization elsewhere)
+    assert (current_c_gc_state != c_gc_state_finalizable_scanning);
+
+    return finalize_queue->RegisterForFinalization (0, (object), (size));
+#else
+    assert (false); // TODO: kill this line, just checking that the feature is enabled
+    return true;
+#endif
+}
 
 #define CHECK_ALLOC_AND_POSSIBLY_REGISTER_FOR_FINALIZATION(_object, _size, _register) do {  \
-    if ((_object) == NULL || ((_register) && !REGISTER_FOR_FINALIZATION(_object, _size)))   \
+    if ((_object) == NULL || ((_register) && !hp->register_for_finalization (_object, _size))) \
     {                                                                                       \
         STRESS_LOG_OOM_STACK(_size);                                                        \
         return NULL;                                                                        \
@@ -39654,9 +39819,17 @@ void CFinalize::WalkFReachableObjects (fq_walk_fn fn)
     }
 }
 
+void CFinalize::EnableFinalizationIfConcurrentFoundFinalizers (gc_heap* hp)
+{
+    if (hp->settings.concurrent && hp->settings.found_finalizers)
+    {
+        GCToEEInterface::EnableFinalization(true);
+    }
+}
+
+// TODO: return value is never used!
 BOOL
-CFinalize::ScanForFinalization (promote_func* pfn, int gen, BOOL mark_only_p,
-                                gc_heap* hp)
+CFinalize::ScanForFinalization (promote_func* pfn, int gen, gc_heap* hp)
 {
     ScanContext sc;
     sc.promotion = TRUE;
@@ -39751,13 +39924,12 @@ CFinalize::ScanForFinalization (promote_func* pfn, int gen, BOOL mark_only_p,
             hp->settings.found_finalizers = !(IsSegEmpty(FinalizerListSeg) && IsSegEmpty(CriticalFinalizerListSeg));
         }
 #endif //BACKGROUND_GC
-        if (hp->settings.concurrent && hp->settings.found_finalizers)
-        {
-            if (!mark_only_p)
-                GCToEEInterface::EnableFinalization(true);
-        }
     }
-
+    else
+    {
+        assert (hp->settings.found_finalizers == FALSE);
+    }
+    
     return finalizedFound;
 }
 
