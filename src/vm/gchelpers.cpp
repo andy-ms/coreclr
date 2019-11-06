@@ -253,6 +253,9 @@ inline Object* Alloc(size_t size, GC_ALLOC_FLAGS flags)
         ThrowOutOfMemory();
     }
 
+    // This one triggers on invalid method table even without concurrent finalization. Probably the MT isn't written yet.
+    // ObjectToOBJECTREF(retVal); // Here to trigger an assertion
+
     return retVal;
 }
 

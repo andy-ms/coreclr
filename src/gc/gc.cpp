@@ -16788,23 +16788,23 @@ void gc_heap::gc1()
             background_mark_phase();
             free_list_info (max_generation, "after mark phase");
             
-#ifdef VERIFY_HEAP
-            dprintf (PRINTME, ("verify heap after free_list_info"));
-            verify_heap (/*begin_gc_p*/ FALSE); // TODO:KILL
-#endif
+//#ifdef VERIFY_HEAP
+//            dprintf (PRINTME, ("verify heap after free_list_info"));
+//            verify_heap (/*begin_gc_p*/ FALSE); // TODO:KILL
+//#endif
 
             background_sweep();
 
-#ifdef VERIFY_HEAP
-            dprintf (PRINTME, ("verify heap after background_sweep"));
-            verify_heap (/*begin_gc_p*/ FALSE); // TODO:KILL
-#endif
+//#ifdef VERIFY_HEAP
+//            dprintf (PRINTME, ("verify heap after background_sweep"));
+//            verify_heap (/*begin_gc_p*/ FALSE); // TODO:KILL
+//#endif
             free_list_info (max_generation, "after sweep phase");
 
-#ifdef VERIFY_HEAP
-            dprintf (PRINTME, ("verify heap after second free_list_info"));
-            verify_heap (/*begin_gc_p*/ FALSE); // TODO:KILL
-#endif
+//#ifdef VERIFY_HEAP
+//            dprintf (PRINTME, ("verify heap after second free_list_info"));
+//            verify_heap (/*begin_gc_p*/ FALSE); // TODO:KILL
+//#endif
         }
         else
 #endif //BACKGROUND_GC
@@ -27859,6 +27859,10 @@ void gc_heap::background_mark_phase ()
 
     if (concurrent_finalization_p)
     {
+        dprintf (PRINTME, ("brb taking a nap"));
+        // Sleep for 1 second to give the EE time to do bad stuff concurrently
+        GCToOSInterface::Sleep (1000);
+
         dprintf (PRINTME, ("suspending EE after concurrent finalization"));
         suspend_ee_after_resetting_bgc_threads_sync_event ();
         dprintf(PRINTME, ("EE suspended"));
@@ -27966,10 +27970,10 @@ void gc_heap::background_mark_phase ()
     // we can't let the user code consume the left over parts in these alloc contexts.
     repair_allocation_contexts (FALSE);
 
-#ifdef VERIFY_HEAP
-    dprintf (PRINTME, ("verifying heap ..."));
-    verify_heap (/*begin_gc_p*/ FALSE);
-#endif
+//#ifdef VERIFY_HEAP
+//    dprintf (PRINTME, ("verifying heap ..."));
+//    verify_heap (/*begin_gc_p*/ FALSE);
+//#endif
 
 #ifdef TIME_GC
         finish = GetCycleCount32();
@@ -37854,6 +37858,12 @@ GCHeap::Alloc(gc_alloc_context* context, size_t size, uint32_t flags REQD_ALIGN_
         GC_TRIGGERS;
     } CONTRACTL_END;
 
+    bool is_concurrent = gc_heap::current_c_gc_state == c_gc_state_finalizable_scanning;
+    if (is_concurrent)
+    {
+        dprintf (PRINTME, ("allocating concurrently!"));
+    }
+
     TRIGGERSGC();
 
     Object* newAlloc = NULL;
@@ -37916,6 +37926,24 @@ GCHeap::Alloc(gc_alloc_context* context, size_t size, uint32_t flags REQD_ALIGN_
     AllocDuration += finish - AllocStart;
     AllocCount++;
 #endif //TRACE_GC
+
+    //if (gc_heap::current_c_gc_state == c_gc_state_finalizable_scanning)
+    //{
+        dprintf (PRINTME, ("cgc: %s", c_gc_state_to_string (gc_heap::current_c_gc_state)));
+    //}
+
+    // New alloc should be zeroed-out
+    for (size_t i = 0; i < size; i++) {
+        const uint8_t byte_here = *(((const uint8_t*) newAlloc) + i);
+        if (byte_here != 0) {
+            dprintf (PRINTME, ("byte %d of object at %p should be 0, but is %d", i, newAlloc, byte_here));
+            assert (false);
+        }
+    }
+
+    // This one triggers on invalid method table even without concurrent finalization. Probably the MT isn't written yet.
+    // ObjectToOBJECTREF(newAlloc); // Here to trigger an assertion
+
     return newAlloc;
 }
 
@@ -39854,7 +39882,7 @@ CFinalize::ScanForFinalization (promote_func* pfn, int gen, gc_heap* hp)
                 dprintf (3, ("scanning: %Ix", (size_t)obj));
                 if (!g_theGCHeap->IsPromoted (obj))
                 {
-                    dprintf (3, ("freacheable: %Ix", (size_t)obj));
+                    dprintf (PRINTME, ("freacheable: %Ix", (size_t)obj));
 
                     assert (method_table(obj)->HasFinalizer());
 
@@ -39904,7 +39932,9 @@ CFinalize::ScanForFinalization (promote_func* pfn, int gen, gc_heap* hp)
     }
     finalizedFound = !IsSegEmpty(FinalizerListSeg) ||
                      !IsSegEmpty(CriticalFinalizerListSeg);
-                    
+    
+    dprintf (PRINTME, ("finalizedFound? %d", finalizedFound));
+
     if (finalizedFound)
     {
         //Promote the f-reachable objects

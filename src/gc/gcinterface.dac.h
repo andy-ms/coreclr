@@ -84,6 +84,24 @@ enum c_gc_state
     c_gc_state_finalizable_scanning
 };
 
+inline static const char* c_gc_state_to_string (const c_gc_state state)
+{
+    switch (state)
+    {
+        case c_gc_state_marking:
+            return "c_gc_state_marking";
+        case c_gc_state_planning:
+            return "c_gc_state_planning";
+        case c_gc_state_free:
+            return "c_gc_state_free";
+        case c_gc_state_finalizable_scanning:
+            return "c_gc_state_finalizable_scanning";
+        default:
+            assert (false);
+            return "<<invalid>>";
+    }
+}
+
 // Reasons why an OOM might occur, recorded in the oom_history
 // struct below.
 enum oom_reason
