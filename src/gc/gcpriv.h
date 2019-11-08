@@ -277,6 +277,7 @@ const int policy_expand  = 2;
 #ifdef SIMPLE_DPRINTF
 
 #define PRINTME 1337
+#define DONTPRINTME 1338
 
 //#define dprintf(l,x) {if (trace_gc && ((l<=print_level)||gc_heap::settings.concurrent)) {printf ("\n");printf x ; fflush(stdout);}}
 void GCLog (const char *fmt, ... );
@@ -1112,6 +1113,14 @@ enum interesting_data_point
     max_idp_count
 };
 
+enum class fix_allocation_contexts_kind
+{
+    before_verify_heap,
+    before_garbage_collect,
+    before_bgc_final_marking,
+    after_concurrent_finalization
+};
+
 //class definition of the internal class
 class gc_heap
 {
@@ -1686,14 +1695,14 @@ protected:
     PER_HEAP
     void repair_allocation_contexts (BOOL repair_p);
     PER_HEAP
-    void fix_allocation_contexts (BOOL for_gc_p);
+    void fix_allocation_contexts (fix_allocation_contexts_kind kind);
     PER_HEAP
-    void fix_youngest_allocation_area (BOOL for_gc_p);
+    void fix_youngest_allocation_area (fix_allocation_contexts_kind kind);
     PER_HEAP
     void fix_allocation_context (alloc_context* acontext, BOOL for_gc_p,
                                  int align_const);
     PER_HEAP
-    void fix_large_allocation_area (BOOL for_gc_p);
+    void fix_large_allocation_area ();
     PER_HEAP
     void fix_older_allocation_area (generation* older_gen);
     PER_HEAP
@@ -3106,8 +3115,12 @@ protected:
     void lock_before_concurrent_finalization ();
     PER_HEAP_ISOLATED
     void unlock_after_concurrent_finalization ();
+    PER_HEAP 
+    bool maybe_reset_bgc_threads_sync_event ();
     PER_HEAP
-    void suspend_ee_after_resetting_bgc_threads_sync_event ();
+    void set_bgc_threads_sync_event ();
+    PER_HEAP
+    void suspend_ee_after_resetting_bgc_threads_sync_event (bool set_c_gc_state);
     PER_HEAP
     void restart_ee_after_resetting_bgc_threads_sync_event ();
 
@@ -3124,7 +3137,7 @@ protected:
     void background_promote_callback(Object** object, ScanContext* sc, uint32_t flags);
 
     PER_HEAP
-    void mark_absorb_new_alloc();
+    void mark_absorb_new_alloc(fix_allocation_contexts_kind kind);
 
     PER_HEAP
     void restart_vm();

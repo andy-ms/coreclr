@@ -84,6 +84,11 @@ enum c_gc_state
     c_gc_state_finalizable_scanning
 };
 
+inline static const char* bool_to_string (const bool b)
+{
+    return b ? "true" : "false";
+}
+
 inline static const char* c_gc_state_to_string (const c_gc_state state)
 {
     switch (state)

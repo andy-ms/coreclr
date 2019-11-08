@@ -87,6 +87,9 @@ int compact_ratio = 0;
 // See comments in reset_memory.
 BOOL reset_mm_p = TRUE;
 
+// Yay globals!
+Object* g_first_concurrent_alloc = nullptr;
+
 bool g_fFinalizerRunOnShutDown = false;
 
 #ifdef FEATURE_SVR_GC
@@ -571,6 +574,7 @@ size_t gc_log_buffer_offset = 0;
 
 void log_va_msg(const char *fmt, va_list args)
 {
+    printf("[%5d]", (uint32_t)GCToOSInterface::GetCurrentThreadIdForLogging());
     vprintf(fmt, args);
     printf("\n");
 
@@ -4172,7 +4176,23 @@ public:
         //((void**) this)[-1] = 0;    // clear the sync block,
         assert (*numComponentsPtr >= 0);
         if (GCConfig::GetHeapVerifyLevel() & GCConfig::HEAPVERIFY_GC)
-            memset (((uint8_t*)this)+sizeof(ArrayBase), 0xcc, *numComponentsPtr);
+        {
+            uint8_t* begin = ((uint8_t*)this)+sizeof(ArrayBase);
+            const size_t numComponents = *numComponentsPtr;
+            const uint8_t* end = begin + numComponents;
+            dprintf (PRINTME, (
+                "CObjectHeader::SetFree %p->%p (%Id)", begin, end, numComponents));
+
+            if (begin <= reinterpret_cast<uint8_t*>(g_first_concurrent_alloc) && reinterpret_cast<uint8_t*>(g_first_concurrent_alloc) < end) {
+                // NOTE: of course we will eventually free it, but for now want to detect that we've been doing so too early
+                dprintf (PRINTME, (
+                    "Uh-oh, freeing the concurrent allocated object %p contained in %p->%p",
+                    g_first_concurrent_alloc, begin, end));
+                assert (false);
+            }
+
+            memset (begin, 0xcc, numComponents);
+        }
 #endif //VERIFY_HEAP
     }
 
@@ -6425,21 +6445,27 @@ void gc_mechanisms::record (gc_history_global* history)
 
 //for_gc_p indicates that the work is being done for GC,
 //as opposed to concurrent heap verification
-void gc_heap::fix_youngest_allocation_area (BOOL for_gc_p)
+void gc_heap::fix_youngest_allocation_area (const fix_allocation_contexts_kind kind)
 {
-    UNREFERENCED_PARAMETER(for_gc_p);
-
     // The gen 0 alloc context is never used for allocation in the allocator path. It's
     // still used in the allocation path during GCs.
     assert (generation_allocation_pointer (youngest_generation) == nullptr);
     assert (generation_allocation_limit (youngest_generation) == nullptr);
-    heap_segment_allocated (ephemeral_heap_segment) = alloc_allocated;
+
+    dprintf (PRINTME, (
+        "setting heap_segment_allocated? %s, Was %p, alloc_allocated is %p",
+        bool_to_string (kind != fix_allocation_contexts_kind::after_concurrent_finalization),
+        heap_segment_allocated (ephemeral_heap_segment),
+        alloc_allocated));
+
+    if (kind != fix_allocation_contexts_kind::after_concurrent_finalization)
+    {
+        heap_segment_allocated (ephemeral_heap_segment) = alloc_allocated;
+    }
 }
 
-void gc_heap::fix_large_allocation_area (BOOL for_gc_p)
+void gc_heap::fix_large_allocation_area ()
 {
-    UNREFERENCED_PARAMETER(for_gc_p);
-
 #ifdef _DEBUG
     alloc_context* acontext = 
 #endif // _DEBUG
@@ -6480,7 +6506,7 @@ void gc_heap::fix_allocation_context (alloc_context* acontext, BOOL for_gc_p,
             size += Align (min_obj_size, align_const);
             assert ((size >= Align (min_obj_size)));
 
-            dprintf(3,("Making unused area [%Ix, %Ix[", (size_t)point,
+            dprintf(PRINTME, ("Making unused area [%Ix, %Ix[", (size_t)point,
                        (size_t)point + size ));
             make_unused_array (point, size);
 
@@ -6555,15 +6581,15 @@ void fix_alloc_context (gc_alloc_context* acontext, void* param)
     g_theGCHeap->FixAllocContext(acontext, (void*)(size_t)(args->for_gc_p), args->heap);
 }
 
-void gc_heap::fix_allocation_contexts (BOOL for_gc_p)
+void gc_heap::fix_allocation_contexts (const fix_allocation_contexts_kind kind)
 {
     fix_alloc_context_args args;
-    args.for_gc_p = for_gc_p;
+    args.for_gc_p = kind == fix_allocation_contexts_kind::before_garbage_collect;
     args.heap = __this;
 
     GCToEEInterface::GcEnumAllocContexts(fix_alloc_context, &args);
-    fix_youngest_allocation_area(for_gc_p);
-    fix_large_allocation_area(for_gc_p);
+    fix_youngest_allocation_area(kind);
+    fix_large_allocation_area();
 }
 
 void gc_heap::fix_older_allocation_area (generation* older_gen)
@@ -6579,7 +6605,7 @@ void gc_heap::fix_older_allocation_area (generation* older_gen)
         if (size != 0)
         {
             assert ((size >= Align (min_obj_size)));
-            dprintf(3,("Making unused area [%Ix, %Ix[", (size_t)point, (size_t)point+size));
+            dprintf(PRINTME , ("older: Making unused area [%Ix, %Ix[", (size_t)point, (size_t)point+size));
             make_unused_array (point, size);
             if (size >= min_free_list)
             {
@@ -12122,6 +12148,9 @@ void gc_heap::adjust_limit_clr (uint8_t* start, size_t limit_size, size_t size,
                                 alloc_context* acontext, uint32_t flags, 
                                 heap_segment* seg, int align_const, int gen_number)
 {
+    dprintf (DONTPRINTME, ("alc: %Ix->%Ix(%Id), start: %Ix, limit: %Id, size: %Id",
+        acontext->alloc_ptr, acontext->alloc_limit, (acontext->alloc_limit - acontext->alloc_ptr), 
+        start, limit_size, size));
     bool loh_p = (gen_number > 0);
     GCSpinLock* msl = loh_p ? &more_space_lock_loh : &more_space_lock_soh;
     uint64_t& total_alloc_bytes = loh_p ? total_alloc_bytes_loh : total_alloc_bytes_soh;
@@ -12245,7 +12274,7 @@ void gc_heap::adjust_limit_clr (uint8_t* start, size_t limit_size, size_t size,
 
         if (clear_start < clear_limit)
         {
-            dprintf(3, ("clearing memory at %Ix for %d bytes", clear_start, clear_limit - clear_start));
+            dprintf(DONTPRINTME, ("clearing memory at %Ix->%Ix for %d bytes", clear_start, ( clear_limit), clear_limit - clear_start));
             memclr(clear_start, clear_limit - clear_start);
         }
     }
@@ -12265,7 +12294,7 @@ void gc_heap::adjust_limit_clr (uint8_t* start, size_t limit_size, size_t size,
                 FATAL_GC_ERROR ();
             }
 
-            dprintf (2, ("clearing memory before used at %Ix for %Id bytes", clear_start, used - clear_start));
+            dprintf (PRINTME, ("clearing memory before used at %Ix for %Id bytes", clear_start, used - clear_start));
             memclr (clear_start, used - clear_start);
         }
     }
@@ -12806,6 +12835,7 @@ void gc_heap::bgc_loh_alloc_clr (uint8_t* alloc_start,
     ((void**) alloc_start)[-1] = 0;     //clear the sync block
     if (!(flags & GC_ALLOC_ZEROING_OPTIONAL))
     {
+        dprintf (PRINTME, ("bgc clr beg: %Ix->%Ix(%Id)", alloc_start + size_to_skip, (alloc_start + size_to_skip + size_to_clear), size_to_clear));
         memclr(alloc_start + size_to_skip, size_to_clear);
     }
 
@@ -12814,6 +12844,7 @@ void gc_heap::bgc_loh_alloc_clr (uint8_t* alloc_start,
     acontext->alloc_ptr = alloc_start;
     acontext->alloc_limit = (alloc_start + size - Align (min_obj_size, align_const));
 
+    dprintf (PRINTME, ("bgc clr: %Ix->%Ix(%Id)", alloc_start, (alloc_start + size), size));
     // need to clear the rest of the object before we hand it out.
     clear_unused_array(alloc_start, size);
 }
@@ -14612,6 +14643,8 @@ CObjectHeader* gc_heap::allocate (size_t jsize, alloc_context* acontext, uint32_
     {
     retry:
         uint8_t*  result = acontext->alloc_ptr;
+        dprintf(DONTPRINTME, ("ac: %Ix->%Ix->%Ix(%Id)", acontext->alloc_ptr, (acontext->alloc_ptr + size), acontext->alloc_limit,
+        (acontext->alloc_limit - acontext->alloc_ptr) ));
         acontext->alloc_ptr+=size;
         if (acontext->alloc_ptr <= acontext->alloc_limit)
         {
@@ -16679,41 +16712,55 @@ BOOL gc_heap::should_proceed_with_gc()
     return TRUE;
 }
 
-void gc_heap::suspend_ee_after_resetting_bgc_threads_sync_event()
+// NOTE: if this returns true, do something, then call `set_bgc_threads_sync_event`.
+bool gc_heap::maybe_reset_bgc_threads_sync_event ()
 {
 #ifdef MULTIPLE_HEAPS
     if (heap_number == 0)
     {
-        suspend_EE();
-        bgc_threads_sync_event.Set();
+        return true;
     }
     else
     {
         bgc_threads_sync_event.Wait(INFINITE, FALSE);
-        // was dprintf(2, ...)
         dprintf (PRINTME, ("bgc_threads_sync_event is signalled"));
+        return false;
     }
 #else
-    suspend_EE();
-#endif //MULTIPLE_HEAPS
+    return true;
+#endif
 }
 
-void gc_heap::restart_ee_after_resetting_bgc_threads_sync_event()
+void gc_heap::set_bgc_threads_sync_event ()
 {
 #ifdef MULTIPLE_HEAPS
-    if (heap_number == 0)
+    assert (heap_number == 0);
+    bgc_threads_sync_event.Set ();
+#endif
+}
+
+void gc_heap::suspend_ee_after_resetting_bgc_threads_sync_event (bool set_c_gc_state)
+{
+    if (maybe_reset_bgc_threads_sync_event ())
     {
-        restart_EE();
-        bgc_threads_sync_event.Set();
+        suspend_EE ();
+        if (set_c_gc_state)
+        {
+            // TODO: not even sure it's necessary to change c_gc_state now that the EE is paused
+            assert (current_c_gc_state == c_gc_state_finalizable_scanning);
+            current_c_gc_state = c_gc_state_marking;
+        }
+        set_bgc_threads_sync_event ();
     }
-    else
+}
+
+void gc_heap::restart_ee_after_resetting_bgc_threads_sync_event ()
+{
+    if (maybe_reset_bgc_threads_sync_event ())
     {
-        bgc_threads_sync_event.Wait(INFINITE, FALSE);
-        dprintf (2, ("bgc_threads_sync_event is signalled"));
+        restart_EE ();
+        set_bgc_threads_sync_event ();
     }
-#else
-    restart_EE();
-#endif //MULTIPLE_HEAPS
 }
 
 //internal part of gc used by the serial and concurrent version
@@ -17050,9 +17097,9 @@ void gc_heap::gc1()
                 bgc_t_join.restart();
             }
 #endif //MULTIPLE_HEAPS
-            suspend_ee_after_resetting_bgc_threads_sync_event();
+            suspend_ee_after_resetting_bgc_threads_sync_event (false);
             //fix the allocation area so verify_heap can proceed.
-            fix_allocation_contexts (FALSE);
+            fix_allocation_contexts (fix_allocation_contexts_kind::before_verify_heap);
         }
 #endif //BACKGROUND_GC
 
@@ -18032,7 +18079,7 @@ void gc_heap::garbage_collect (int n)
     //reset the number of alloc contexts
     alloc_contexts_used = 0;
 
-    fix_allocation_contexts (TRUE);
+    fix_allocation_contexts (fix_allocation_contexts_kind::before_garbage_collect);
 #ifdef MULTIPLE_HEAPS
 #ifdef JOIN_STATS
     gc_t_join.start_ts(this);
@@ -18236,6 +18283,11 @@ void gc_heap::garbage_collect (int n)
     if ((GCConfig::GetHeapVerifyLevel() & GCConfig::HEAPVERIFY_GC) &&
        !(GCConfig::GetHeapVerifyLevel() & GCConfig::HEAPVERIFY_POST_GC_ONLY))
     {
+        dprintf (PRINTME, (
+            "About to verify_heap. This is a gen %d GC, concurrent? %s",
+            settings.condemned_generation,
+            bool_to_string(settings.concurrent)));
+
         verify_heap (TRUE);
     }
     if (GCConfig::GetHeapVerifyLevel() & GCConfig::HEAPVERIFY_BARRIERCHECK)
@@ -24956,7 +25008,7 @@ void gc_heap::loh_thread_gap_front (uint8_t* gap_start, size_t size, generation*
 
 void gc_heap::make_unused_array (uint8_t* x, size_t size, BOOL clearp, BOOL resetp)
 {
-    dprintf (3, ("Making unused array [%Ix, %Ix[",
+    dprintf (PRINTME, ("make_unused_array: Making unused array [%Ix, %Ix[",
         (size_t)x, (size_t)(x+size)));
     assert (size >= Align (min_obj_size));
 
@@ -27668,7 +27720,7 @@ void gc_heap::background_mark_phase ()
 
         FIRE_EVENT(BGC2ndNonConBegin);
 
-        mark_absorb_new_alloc();
+        mark_absorb_new_alloc(fix_allocation_contexts_kind::before_bgc_final_marking);
 
         // We need a join here 'cause find_object would complain if the gen0
         // bricks of another heap haven't been fixed up. So we need to make sure
@@ -27782,6 +27834,10 @@ void gc_heap::background_mark_phase ()
     // Hmm. Preemptive gcs are disabled, but we hold the GC lock so they won't actually happen, right?
     assert (!GCToEEInterface::IsPreemptiveGCDisabled ());
 
+    // We need to void alloc contexts here 'cause while background_ephemeral_sweep is running
+    // we can't let the user code consume the left over parts in these alloc contexts.
+    repair_allocation_contexts (TRUE); // TRUE means: memclr instead of just voiding the alloc contexts
+
     {
         if (concurrent_finalization_p)
         {
@@ -27840,9 +27896,6 @@ void gc_heap::background_mark_phase ()
         // The EE remains suspended through to background_sweep(), when we set it to c_gc_state_planning.
 #endif
 
-        assert (current_c_gc_state == c_gc_state_finalizable_scanning);
-        current_c_gc_state = c_gc_state_marking;
-
         if (concurrent_finalization_p)
         {
             dprintf(PRINTME, ("Unlocking after concurrent finalization"));
@@ -27861,15 +27914,18 @@ void gc_heap::background_mark_phase ()
     {
         dprintf (PRINTME, ("brb taking a nap"));
         // Sleep for 1 second to give the EE time to do bad stuff concurrently
-        GCToOSInterface::Sleep (1000);
+        GCToOSInterface::Sleep (100);
 
         dprintf (PRINTME, ("suspending EE after concurrent finalization"));
-        suspend_ee_after_resetting_bgc_threads_sync_event ();
+        suspend_ee_after_resetting_bgc_threads_sync_event (true);
         dprintf(PRINTME, ("EE suspended"));
 
         // All the gen0 and loh objects added since beginning of concurrent finalization must be marked.
         // mark_all_new_objects_live ();
     }
+
+    //TODO: only do this if concurrent_finalization_p?
+    mark_absorb_new_alloc (fix_allocation_contexts_kind::after_concurrent_finalization);
 
     // Previously this happened at end of ScanForFinalization.
     // Waited to do this until the EE was suspended.
@@ -27966,10 +28022,6 @@ void gc_heap::background_mark_phase ()
 //    verify_heap (/*begin_gc_p*/ FALSE); // TODO:KILL
 //#endif
 
-    // We need to void alloc contexts here 'cause while background_ephemeral_sweep is running
-    // we can't let the user code consume the left over parts in these alloc contexts.
-    repair_allocation_contexts (FALSE);
-
 //#ifdef VERIFY_HEAP
 //    dprintf (PRINTME, ("verifying heap ..."));
 //    verify_heap (/*begin_gc_p*/ FALSE);
@@ -27979,6 +28031,10 @@ void gc_heap::background_mark_phase ()
         finish = GetCycleCount32();
         mark_time = finish - start;
 #endif //TIME_GC
+
+    // We need to void alloc contexts here 'cause while background_ephemeral_sweep is running
+    // we can't let the user code consume the left over parts in these alloc contexts.
+    repair_allocation_contexts (FALSE);
 
     dprintf (PRINTME, ("end of bgc mark: gen2 free list space: %d, free obj space: %d", 
         generation_free_list_space (generation_of (max_generation)), 
@@ -28527,9 +28583,9 @@ void gc_heap::background_promote_callback (Object** ppObject, ScanContext* sc,
     STRESS_LOG3(LF_GC|LF_GCROOTS, LL_INFO1000000, "    GCHeap::Background Promote: Promote GC Root *%p = %p MT = %pT", ppObject, o, o ? ((Object*) o)->GetGCSafeMethodTable() : NULL);
 }
 
-void gc_heap::mark_absorb_new_alloc()
+void gc_heap::mark_absorb_new_alloc(const fix_allocation_contexts_kind kind)
 {
-    fix_allocation_contexts (FALSE);
+    fix_allocation_contexts (kind);
     
     gen0_bricks_cleared = FALSE;
 
@@ -36243,7 +36299,7 @@ gc_heap::verify_heap (BOOL begin_gc_p)
                     uint8_t* clear_start = heap_segment_allocated (seg1) - plug_skew;
                     if (heap_segment_used (seg1) > clear_start)
                     {
-                        dprintf (3, ("setting end of seg %Ix: [%Ix-[%Ix to 0xaa", 
+                        dprintf (PRINTME, ("setting end of seg %Ix: [%Ix-[%Ix to 0xaa", 
                                     heap_segment_mem (seg1),
                                     clear_start ,
                                     heap_segment_used (seg1)));
@@ -36675,6 +36731,12 @@ void GCHeap::ValidateObjectMember (Object* obj)
                                         dprintf (3, ("VOM: m: %Ix obj %Ix", (size_t)child_o, o));
                                         MethodTable *pMT = method_table (child_o);
                                         assert(pMT);
+
+                                        if (reinterpret_cast<uintptr_t>(pMT) == 0xcccccccccccccccc) {
+                                            dprintf (PRINTME, ("Object at %p has invalid method table", child_o));
+                                            assert (false);
+                                        }
+
                                         if (!pMT->SanityCheck()) {
                                             dprintf (3, ("Bad member of %Ix %Ix",
                                                         (size_t)oo, (size_t)child_o));
@@ -37621,6 +37683,8 @@ bool gc_heap::register_for_finalization (Object* object, const size_t size) {
     // TODO: handle this case (by registering for finalization elsewhere)
     assert (current_c_gc_state != c_gc_state_finalizable_scanning);
 
+    dprintf (PRINTME, ("alloc %Ix", object));
+
     return finalize_queue->RegisterForFinalization (0, (object), (size));
 #else
     assert (false); // TODO: kill this line, just checking that the feature is enabled
@@ -37850,6 +37914,12 @@ GCHeap::AllocLHeap( size_t size, uint32_t flags REQD_ALIGN_DCL)
     return newAlloc;
 }
 
+static void set_first_concurrent_alloc (Object* newAlloc)
+{
+    dprintf (PRINTME, ("FIRST CONCURRENT ALLOC: %p", newAlloc));
+    g_first_concurrent_alloc = newAlloc;
+}
+
 Object*
 GCHeap::Alloc(gc_alloc_context* context, size_t size, uint32_t flags REQD_ALIGN_DCL)
 {
@@ -37859,9 +37929,9 @@ GCHeap::Alloc(gc_alloc_context* context, size_t size, uint32_t flags REQD_ALIGN_
     } CONTRACTL_END;
 
     bool is_concurrent = gc_heap::current_c_gc_state == c_gc_state_finalizable_scanning;
-    if (is_concurrent)
+    //if (is_concurrent)
     {
-        dprintf (PRINTME, ("allocating concurrently!"));
+        dprintf (DONTPRINTME, ("Alloc enter: %5Id, ac %Ix->%Ix(%Id)", size, context->alloc_ptr, context->alloc_limit, (context->alloc_limit - context->alloc_ptr)));
     }
 
     TRIGGERSGC();
@@ -37929,8 +37999,23 @@ GCHeap::Alloc(gc_alloc_context* context, size_t size, uint32_t flags REQD_ALIGN_
 
     //if (gc_heap::current_c_gc_state == c_gc_state_finalizable_scanning)
     //{
-        dprintf (PRINTME, ("cgc: %s", c_gc_state_to_string (gc_heap::current_c_gc_state)));
+        dprintf (DONTPRINTME, (
+            "Alloc after: returning %p, ac %Ix->%Ix(%Id), cgc: %s, %Id", 
+            newAlloc,
+            context->alloc_ptr,
+            context->alloc_limit,
+            (context->alloc_limit - context->alloc_ptr),
+            c_gc_state_to_string (gc_heap::current_c_gc_state), size));
     //}
+
+    if (gc_heap::current_c_gc_state == c_gc_state_finalizable_scanning)
+    {
+        if (g_first_concurrent_alloc == nullptr)
+        {
+            set_first_concurrent_alloc(newAlloc);
+        }
+    }
+
 
     // New alloc should be zeroed-out
     for (size_t i = 0; i < size; i++) {
@@ -39657,7 +39742,7 @@ CFinalize::RegisterForFinalization (int gen, Object* obj, size_t size)
             {
                 // If the object is uninitialized, a valid size should have been passed.
                 assert (size >= Align (min_obj_size));
-                dprintf (3, ("Making unused array [%Ix, %Ix[", (size_t)obj, (size_t)(obj+size)));
+                dprintf (PRINTME, ("Making unused array [%Ix, %Ix[", (size_t)obj, (size_t)(obj+size)));
                 ((CObjectHeader*)obj)->SetFree(size);
             }
             STRESS_LOG_OOM_STACK(0);
