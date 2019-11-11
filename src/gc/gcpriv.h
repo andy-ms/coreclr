@@ -1121,6 +1121,24 @@ enum class fix_allocation_contexts_kind
     after_concurrent_finalization
 };
 
+inline const char* fix_allocation_contexts_kind_to_string (const fix_allocation_contexts_kind f)
+{
+    switch (f)
+    {
+        case fix_allocation_contexts_kind::before_verify_heap:
+            return "before_verify_heap";
+        case fix_allocation_contexts_kind::before_garbage_collect:
+            return "before_garbage_collect";
+        case fix_allocation_contexts_kind::before_bgc_final_marking:
+            return "before_bgc_final_marking";
+        case fix_allocation_contexts_kind::after_concurrent_finalization:
+            return "after_concurrent_finalization";
+        default:
+            assert (false);
+            return "<error>";
+    }
+}
+
 //class definition of the internal class
 class gc_heap
 {

@@ -574,7 +574,7 @@ size_t gc_log_buffer_offset = 0;
 
 void log_va_msg(const char *fmt, va_list args)
 {
-    printf("[%5d]", (uint32_t)GCToOSInterface::GetCurrentThreadIdForLogging());
+    printf("[%5d] ", (uint32_t) GCToOSInterface::GetCurrentThreadIdForLogging());
     vprintf(fmt, args);
     printf("\n");
 
@@ -1501,7 +1501,7 @@ try_again_no_inc:
             dprintf (2, ("foreground_count: %d", (int32_t)foreground_count));
             if (foreground_gate)
             {
-                dprintf(PRINTME, ("DISABLING SETTINGS.CONCURRENT. 42 = %d\n", 42));
+                dprintf(PRINTME, ("DISABLING SETTINGS.CONCURRENT, begin_foreground"));
                 gc_heap::settings.concurrent = FALSE;
                 return;
             }
@@ -4180,7 +4180,7 @@ public:
             uint8_t* begin = ((uint8_t*)this)+sizeof(ArrayBase);
             const size_t numComponents = *numComponentsPtr;
             const uint8_t* end = begin + numComponents;
-            dprintf (PRINTME, (
+            dprintf (DONTPRINTME, (
                 "CObjectHeader::SetFree %p->%p (%Id)", begin, end, numComponents));
 
             if (begin <= reinterpret_cast<uint8_t*>(g_first_concurrent_alloc) && reinterpret_cast<uint8_t*>(g_first_concurrent_alloc) < end) {
@@ -6453,14 +6453,31 @@ void gc_heap::fix_youngest_allocation_area (const fix_allocation_contexts_kind k
     assert (generation_allocation_limit (youngest_generation) == nullptr);
 
     dprintf (PRINTME, (
-        "setting heap_segment_allocated? %s, Was %p, alloc_allocated is %p",
-        bool_to_string (kind != fix_allocation_contexts_kind::after_concurrent_finalization),
+        "fix_youngest_allocation_area: %s, heap_segment_allocated = %p, alloc_allocated = %p",
+        fix_allocation_contexts_kind_to_string (kind),
         heap_segment_allocated (ephemeral_heap_segment),
         alloc_allocated));
 
-    if (kind != fix_allocation_contexts_kind::after_concurrent_finalization)
+    switch (kind)
     {
-        heap_segment_allocated (ephemeral_heap_segment) = alloc_allocated;
+        case fix_allocation_contexts_kind::before_verify_heap:
+        case fix_allocation_contexts_kind::before_garbage_collect:
+            heap_segment_allocated (ephemeral_heap_segment) = alloc_allocated;
+            break;
+
+        case fix_allocation_contexts_kind::before_bgc_final_marking:
+            // do nothing?
+            // If we set heap_segment_allocated to alloc_allocated -- that is the end of the allocation ctx, but user threads may still be using that
+            // and we don't want to mark things as free when user threads are about to allocate to them
+            // TODO: Ideally we'd set not to alloc_allocated but to wherever the allocation context has used
+            break;
+
+        case fix_allocation_contexts_kind::after_concurrent_finalization:
+            // do nothing
+            break;
+
+        default:
+            assert(false);
     }
 }
 
@@ -6489,7 +6506,7 @@ void gc_heap::fix_large_allocation_area ()
 void gc_heap::fix_allocation_context (alloc_context* acontext, BOOL for_gc_p,
                                       int align_const)
 {
-    dprintf (3, ("Fixing allocation context %Ix: ptr: %Ix, limit: %Ix",
+    dprintf (PRINTME, ("Fixing allocation context %Ix: ptr: %Ix, limit: %Ix",
                  (size_t)acontext,
                  (size_t)acontext->alloc_ptr, (size_t)acontext->alloc_limit));
 
@@ -6588,7 +6605,7 @@ void gc_heap::fix_allocation_contexts (const fix_allocation_contexts_kind kind)
     args.heap = __this;
 
     GCToEEInterface::GcEnumAllocContexts(fix_alloc_context, &args);
-    fix_youngest_allocation_area(kind);
+    fix_youngest_allocation_area (kind);
     fix_large_allocation_area();
 }
 
@@ -18246,7 +18263,7 @@ void gc_heap::garbage_collect (int n)
             ((settings.pause_mode == pause_interactive) || (settings.pause_mode == pause_sustained_low_latency)))
         {
             keep_bgc_threads_p = TRUE;
-            dprintf (PRINTME, ("SETTINGS.CONCURRENT = TRUE, garbage_collect\n"));
+            dprintf (PRINTME, ("SETTINGS.CONCURRENT = TRUE, garbage_collect"));
             c_write (settings.concurrent,  TRUE);
         }
 #endif //BACKGROUND_GC
@@ -18415,7 +18432,7 @@ void gc_heap::garbage_collect (int n)
             else
             {
                 settings.compaction = TRUE;
-                dprintf (PRINTME, ("SETTINGS.CONCURRENT = FALSE, garbage_collect\n"));
+                dprintf (PRINTME, ("SETTINGS.CONCURRENT = FALSE, garbage_collect"));
                 c_write (settings.concurrent, FALSE);
             }
 
@@ -18480,6 +18497,10 @@ done:
     if (settings.pause_mode == pause_no_gc)
         allocate_for_no_gc_after_gc();
 
+    dprintf (PRINTME, (
+        "End of GC, gen %d, concurrent? %s",
+        settings.condemned_generation,
+       bool_to_string(settings.concurrent)));
 }
 
 #define mark_stack_empty_p() (mark_stack_base == mark_stack_tos)
@@ -25008,7 +25029,7 @@ void gc_heap::loh_thread_gap_front (uint8_t* gap_start, size_t size, generation*
 
 void gc_heap::make_unused_array (uint8_t* x, size_t size, BOOL clearp, BOOL resetp)
 {
-    dprintf (PRINTME, ("make_unused_array: Making unused array [%Ix, %Ix[",
+    dprintf (DONTPRINTME, ("make_unused_array: Making unused array [%Ix, %Ix[",
         (size_t)x, (size_t)(x+size)));
     assert (size >= Align (min_obj_size));
 
@@ -27720,7 +27741,7 @@ void gc_heap::background_mark_phase ()
 
         FIRE_EVENT(BGC2ndNonConBegin);
 
-        mark_absorb_new_alloc(fix_allocation_contexts_kind::before_bgc_final_marking);
+        mark_absorb_new_alloc (fix_allocation_contexts_kind::before_bgc_final_marking);
 
         // We need a join here 'cause find_object would complain if the gen0
         // bricks of another heap haven't been fixed up. So we need to make sure
@@ -28937,11 +28958,11 @@ void gc_heap::bgc_thread_function()
             fire_pevents();
 #endif //MULTIPLE_HEAPS
 
-            dprintf (PRINTME, ("SETTINGS.CONCURRENT = FALSE, bgc_thread_function\n"));
+            dprintf (PRINTME, ("SETTINGS.CONCURRENT = FALSE, bgc_thread_function"));
             c_write (settings.concurrent, FALSE);
             recursive_gc_sync::end_background();
             keep_bgc_threads_p = FALSE;
-            dprintf (PRINTME, ("Setting background_gc_done_event from gc_thread_function\n"));
+            dprintf (PRINTME, ("Setting background_gc_done_event from gc_thread_function"));
             background_gc_done_event.Set();
 
             dprintf (SPINLOCK_LOG, ("bgc Lgc"));
@@ -35672,7 +35693,7 @@ void gc_heap::bgc_verify_mark_array_cleared (heap_segment* seg)
             {
                 if (mark_array [markw])
                 {
-                    dprintf  (3, ("The mark bits at 0x%Ix:0x%Ix(addr: 0x%Ix) were not cleared", 
+                    dprintf  (PRINTME, ("The mark bits at 0x%Ix:0x%Ix(addr: 0x%Ix) were not cleared", 
                                     markw, mark_array [markw], mark_word_address (markw)));
                     FATAL_GC_ERROR();
                 }
