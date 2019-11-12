@@ -1126,11 +1126,11 @@ inline const char* fix_allocation_contexts_kind_to_string (const fix_allocation_
     switch (f)
     {
         case fix_allocation_contexts_kind::before_verify_heap:
-            return "before_verify_heap";
+            return "           before_verify_heap";
         case fix_allocation_contexts_kind::before_garbage_collect:
-            return "before_garbage_collect";
+            return "       before_garbage_collect";
         case fix_allocation_contexts_kind::before_bgc_final_marking:
-            return "before_bgc_final_marking";
+            return "     before_bgc_final_marking";
         case fix_allocation_contexts_kind::after_concurrent_finalization:
             return "after_concurrent_finalization";
         default:
@@ -2186,6 +2186,10 @@ protected:
     void verify_mark_bits_cleared (uint8_t* obj, size_t s);
     PER_HEAP
     void clear_all_mark_array();
+    // Mark all objects in the range.
+    // This is for use after a concurrent BGC.
+    PER_HEAP
+    void mark_entire_range (uint8_t* begin, uint8_t* end);
     // When user code runs alongside a background GC,
     // we want to ensure that that code only allocates to the *end* of each generation, never using free parts.
     // Then after stopping the EE again, we call mark_all_new_objects_live so everything in that range will be considered alive.

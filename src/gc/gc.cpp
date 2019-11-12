@@ -6462,17 +6462,13 @@ void gc_heap::fix_youngest_allocation_area (const fix_allocation_contexts_kind k
     {
         case fix_allocation_contexts_kind::before_verify_heap:
         case fix_allocation_contexts_kind::before_garbage_collect:
+        case fix_allocation_contexts_kind::before_bgc_final_marking:
             heap_segment_allocated (ephemeral_heap_segment) = alloc_allocated;
             break;
 
-        case fix_allocation_contexts_kind::before_bgc_final_marking:
-            // do nothing?
-            // If we set heap_segment_allocated to alloc_allocated -- that is the end of the allocation ctx, but user threads may still be using that
-            // and we don't want to mark things as free when user threads are about to allocate to them
-            // TODO: Ideally we'd set not to alloc_allocated but to wherever the allocation context has used
-            break;
-
         case fix_allocation_contexts_kind::after_concurrent_finalization:
+            mark_entire_range (heap_segment_allocated (ephemeral_heap_segment), alloc_allocated);
+            heap_segment_allocated (ephemeral_heap_segment) = alloc_allocated;
             // do nothing
             break;
 
@@ -6506,16 +6502,21 @@ void gc_heap::fix_large_allocation_area ()
 void gc_heap::fix_allocation_context (alloc_context* acontext, BOOL for_gc_p,
                                       int align_const)
 {
-    dprintf (PRINTME, ("Fixing allocation context %Ix: ptr: %Ix, limit: %Ix",
-                 (size_t)acontext,
-                 (size_t)acontext->alloc_ptr, (size_t)acontext->alloc_limit));
+    dprintf (PRINTME, (
+        "Fixing allocation context %Ix: ptr: %Ix, limit: %Ix, for_gc_p? %s",
+        (size_t)acontext,
+        (size_t)acontext->alloc_ptr,
+        (size_t)acontext->alloc_limit,
+        bool_to_string (for_gc_p)));
 
     if (((size_t)(alloc_allocated - acontext->alloc_limit) > Align (min_obj_size, align_const)) ||
         !for_gc_p)
     {
+        dprintf (PRINTME, ("A"));
         uint8_t*  point = acontext->alloc_ptr;
         if (point != 0)
         {
+            dprintf (PRINTME, ("AA"));
             size_t  size = (acontext->alloc_limit - acontext->alloc_ptr);
             // the allocation area was from the free list
             // it was shortened by Align (min_obj_size) to make room for
@@ -6536,6 +6537,7 @@ void gc_heap::fix_allocation_context (alloc_context* acontext, BOOL for_gc_p,
     }
     else if (for_gc_p)
     {
+        dprintf (PRINTME, ("B"));
         alloc_allocated = acontext->alloc_ptr;
         assert (heap_segment_allocated (ephemeral_heap_segment) <=
                 heap_segment_committed (ephemeral_heap_segment));
@@ -6544,6 +6546,7 @@ void gc_heap::fix_allocation_context (alloc_context* acontext, BOOL for_gc_p,
 
     if (for_gc_p)
     {
+        dprintf (PRINTME, ("C"));
         // We need to update the alloc_bytes to reflect the portion that we have not used  
         acontext->alloc_bytes -= (acontext->alloc_limit - acontext->alloc_ptr);  
         total_alloc_bytes_soh -= (acontext->alloc_limit - acontext->alloc_ptr);
@@ -6561,7 +6564,7 @@ void repair_allocation (gc_alloc_context* acontext, void*)
 
     if (point != 0)
     {
-        dprintf (3, ("Clearing [%Ix, %Ix[", (size_t)acontext->alloc_ptr,
+        dprintf (PRINTME, ("Clearing [%Ix, %Ix[", (size_t)acontext->alloc_ptr,
                      (size_t)acontext->alloc_limit+Align(min_obj_size)));
         memclr (acontext->alloc_ptr - plug_skew,
                 (acontext->alloc_limit - acontext->alloc_ptr)+Align (min_obj_size));
@@ -6574,7 +6577,7 @@ void void_allocation (gc_alloc_context* acontext, void*)
 
     if (point != 0)
     {
-        dprintf (3, ("Void [%Ix, %Ix[", (size_t)acontext->alloc_ptr,
+        dprintf (PRINTME, ("Void [%Ix, %Ix[", (size_t)acontext->alloc_ptr,
                      (size_t)acontext->alloc_limit+Align(min_obj_size)));
         acontext->alloc_ptr = 0;
         acontext->alloc_limit = acontext->alloc_ptr;
@@ -9629,6 +9632,16 @@ retry:
 inline size_t my_get_size (Object* ob)
 {
     MethodTable* mT = header(ob)->GetMethodTable();
+    
+    if (reinterpret_cast<uintptr_t>(mT) == 0x0000) {
+        dprintf (PRINTME, ("Object at %p has null method table", ob));
+        assert (false);
+    }
+
+    if (reinterpret_cast<uintptr_t>(mT) == 0xcccccccccccccccc) {
+        dprintf (PRINTME, ("Object at %p has invalid method table", ob));
+        assert (false);
+    }
 
     return (mT->GetBaseSize() +
             (mT->HasComponentSize() ?
@@ -12165,9 +12178,14 @@ void gc_heap::adjust_limit_clr (uint8_t* start, size_t limit_size, size_t size,
                                 alloc_context* acontext, uint32_t flags, 
                                 heap_segment* seg, int align_const, int gen_number)
 {
-    dprintf (DONTPRINTME, ("alc: %Ix->%Ix(%Id), start: %Ix, limit: %Id, size: %Id",
-        acontext->alloc_ptr, acontext->alloc_limit, (acontext->alloc_limit - acontext->alloc_ptr), 
-        start, limit_size, size));
+    dprintf (PRINTME, (
+        "adjust_limit_clr: %Ix->%Ix(%Id), start: %Ix, limit: %Id, size: %Id",
+        acontext->alloc_ptr,
+        acontext->alloc_limit,
+        (acontext->alloc_limit - acontext->alloc_ptr), 
+        start,
+        limit_size,
+        size));
     bool loh_p = (gen_number > 0);
     GCSpinLock* msl = loh_p ? &more_space_lock_loh : &more_space_lock_soh;
     uint64_t& total_alloc_bytes = loh_p ? total_alloc_bytes_loh : total_alloc_bytes_soh;
@@ -12291,7 +12309,7 @@ void gc_heap::adjust_limit_clr (uint8_t* start, size_t limit_size, size_t size,
 
         if (clear_start < clear_limit)
         {
-            dprintf(DONTPRINTME, ("clearing memory at %Ix->%Ix for %d bytes", clear_start, ( clear_limit), clear_limit - clear_start));
+            dprintf (PRINTME, ("clearing memory at %Ix->%Ix for %d bytes", clear_start, ( clear_limit), clear_limit - clear_start));
             memclr(clear_start, clear_limit - clear_start);
         }
     }
@@ -20121,7 +20139,7 @@ uint8_t* gc_heap::background_mark_object (uint8_t* o THREAD_NUMBER_DCL)
     {
         if (o)
         {
-            dprintf (3, ("or-%Ix", o));
+            dprintf (PRINTME, ("or-%Ix", o));
         }
     }
     return o;
@@ -22304,15 +22322,43 @@ void gc_heap::seg_set_mark_bits (heap_segment* seg)
 #ifdef _DEBUG
     for (uint8_t* o = heap_segment_mem (seg); o < heap_segment_allocated (seg); o = next_object (o))
     {
-        go_through_object_cl (method_table(o), o, size(o), ppslot,
+        go_through_object_cl (method_table (o), o, size (o), ppslot,
         {
             uint8_t* referenced = *ppslot;
-            assert(marked(referenced));
+            assert (marked (referenced));
         });
     }
 #endif //_DEBUG
 }
 */
+
+inline
+void gc_heap::mark_entire_range (uint8_t* begin, uint8_t* end)
+{
+    assert (begin <= end);
+    // Note: no need to recursively mark objects referenced by these.
+    // This is part of marking *all* new objects as live,
+    // thus anything they reference is live already or will be marked.
+
+    for (uint8_t* o = begin; o < end; o = next_object (o))
+    {
+        // These are new objects, so we would never have a chance to mark them before
+        bool marked = background_mark1 (o);
+        assert (marked);
+    }
+
+    // Now assert that everything they reference is live.
+#ifdef _DEBUG
+    for (uint8_t* o = begin; o < end; o = next_object (o))
+    {
+        go_through_object_cl (method_table (o), o, size (o), ppslot,
+        {
+            uint8_t* referenced = *ppslot;
+            assert (background_marked (referenced));
+        });
+    }
+#endif //_DEBUG
+}
 
 #ifdef FEATURE_BASICFREEZE
 void gc_heap::sweep_ro_segments (heap_segment* start_seg)
@@ -28606,6 +28652,8 @@ void gc_heap::background_promote_callback (Object** ppObject, ScanContext* sc,
 
 void gc_heap::mark_absorb_new_alloc(const fix_allocation_contexts_kind kind)
 {
+    dprintf (PRINTME, ("mark_absorb_new_alloc %s", fix_allocation_contexts_kind_to_string (kind)));
+
     fix_allocation_contexts (kind);
     
     gen0_bricks_cleared = FALSE;
@@ -38057,9 +38105,9 @@ void
 GCHeap::FixAllocContext (gc_alloc_context* context, void* arg, void *heap)
 {
     alloc_context* acontext = static_cast<alloc_context*>(context);
+    const bool for_gc_p = arg != 0;
 #ifdef MULTIPLE_HEAPS
-
-    if (arg != 0)
+    if (for_gc_p)
         acontext->alloc_count = 0;
 
     uint8_t * alloc_ptr = acontext->alloc_ptr;
@@ -38076,8 +38124,7 @@ GCHeap::FixAllocContext (gc_alloc_context* context, void* arg, void *heap)
 
     if (heap == NULL || heap == hp)
     {
-        hp->fix_allocation_context (acontext, ((arg != 0)? TRUE : FALSE),
-                                    get_alignment_constant(TRUE));
+        hp->fix_allocation_context (acontext, for_gc_p, get_alignment_constant(TRUE));
     }
 }
 
