@@ -5148,80 +5148,12 @@ extern "C" uint64_t __rdtsc();
 //};
 
 using heap_no_t = uint16_t;
+#define INVALID_HEAP 0xffff
+// Index into a list of heap indices
+using heap_i_i_t = heap_no_t;
 using heap_count_t = heap_no_t;
 using proc_no_t = uint16_t;
 using numa_no_t = uint16_t;
-
-class range
-{
-    heap_no_t low_inclusive;
-    heap_no_t high_exclusive;
-
-public:
-    static range single(heap_no_t h)
-    {
-        return range{h, static_cast<heap_no_t>(h + 1)};
-    }
-
-    range(heap_no_t low, heap_no_t high) : low_inclusive{low}, high_exclusive{high}
-    {
-        assert (low_inclusive <= high_exclusive);
-    }
-
-    void set_high_exclusive (const heap_no_t new_high_exclusive)
-    {
-        assert (low_inclusive < new_high_exclusive);
-        high_exclusive = new_high_exclusive;
-    }
-
-    bool is_zero () const
-    {
-        return low_inclusive == 0 && high_exclusive == 0;
-    }
-
-    heap_count_t size () const
-    {
-        assert (!is_zero ());
-        return high_exclusive - low_inclusive;
-    }
-
-    heap_no_t at(const heap_no_t i) const
-    {
-        assert (i < size ());
-        return low_inclusive + i;
-    }
-
-    struct iter
-    {
-        heap_no_t i;
-
-        heap_no_t operator* () const
-        {
-            return i;
-        }
-
-        void operator++ ()
-        {
-            ++i;
-        }
-
-        bool operator!= (const iter other) const
-        {
-            return i != other.i;
-        }
-    };
-
-    iter begin () const
-    {
-        return iter {low_inclusive};
-    }
-
-    iter end() const
-    {
-        return iter {high_exclusive};
-    }
-};
-
 
 // TODO: does this exist already?
 template <typename T>
@@ -5261,64 +5193,53 @@ public:
     }
 };
 
-/** Maps a number to a set of ranges. */
-struct ranges_map
-{
-    // Private range storage
-    range ranges[MAX_SUPPORTED_CPUS];
-    // Maps numa node number to the first range
-    // Will also have an entry for the max numa node + 1, indicating where the previous ended
-    // NOTE: using heap_no_t as there can't be more ranges than there are heaps
-    heap_no_t numa_node_to_first_range[MAX_SUPPORTED_CPUS];
-    static_assert (MAX_SUPPORTED_CPUS < (1 << (sizeof(heap_no_t) * CHAR_BIT)), "MAX_SUPPORTED_CPUS must fit inside numa_no_t");
-
-    slice<const range> ranges_for_numa_node (const numa_no_t nn) const
-    {
-        return slice<const range>::from_array (ranges, numa_node_to_first_range[nn], numa_node_to_first_range[nn + 1]);
-    }
-
-    heap_count_t heap_count_for_node (const numa_no_t nn) const
-    {
-        heap_count_t count = 0;
-        for (const range r : ranges_for_numa_node (nn))
-        {
-            count += r.size ();
-        }
-        return count;
-    }
-
-    bool numa_node_is_empty (const numa_no_t nn) const
-    {
-        return ranges_for_numa_node (nn).empty ();
-    }
-
-    // PRE: !numa_node_is_empty(nn)
-    heap_no_t get_nth_heap_modular_for_numa_node (const numa_no_t nn, const size_t n) const
-    {
-        const slice<const range> ranges = ranges_for_numa_node (nn);
-        assert (!ranges.empty ());
-        heap_no_t remaining = n % heap_count_for_node (nn);
-        for (const range r : ranges)
-        {
-            const heap_count_t rs = r.size ();
-            if (remaining < rs)
-            {
-                return r.at(remaining);
-            }
-            else
-            {
-                remaining -= rs;
-            }
-        }
-        // Should be impossible to reach here
-        assert (false);
-        return 0;
-    }
-};
-
 class heap_select
 {
     heap_select() {}
+    
+    // Private heap storage. Each numa node will have a slice in this.
+    // Has an entry for each index in 0 .. heap_count () - 1
+    static heap_no_t all_heaps[MAX_SUPPORTED_CPUS];
+    // Maps numa node number to the first heap. This will end at numa_no_to_first_heap[nn+1].
+    // Will also have an entry for the max numa node + 1, indicating where the previous ended
+    // NOTE: using heap_no_t as there can't be more ranges than there are heaps
+    // Has an entry for each index in 0..total_numa_nodes --
+    //  including at total_numa_nodes (which is not a valid numa node number) to specify the end of the last numa node.
+    static heap_no_t numa_no_to_first_heap[MAX_SUPPORTED_CPUS];
+    static_assert (MAX_SUPPORTED_CPUS < (1 << (sizeof(heap_no_t) * CHAR_BIT)), "MAX_SUPPORTED_CPUS must fit inside numa_no_t");
+
+    static void heaps_for_numa_node (const numa_no_t nn, heap_i_i_t* hp_i_start, heap_i_i_t* hp_i_end)
+    {
+        assert (nn < total_numa_nodes);
+        *hp_i_start = numa_no_to_first_heap[nn];
+        *hp_i_end = numa_no_to_first_heap[nn + 1];
+        assert (hp_i_end >= hp_i_start);
+        assert (*hp_i_start < heap_count () && *hp_i_end <= heap_count ());
+    }
+
+    static bool numa_node_is_empty (const numa_no_t nn)
+    {
+        assert (nn < total_numa_nodes);
+        heap_i_i_t hp_i_start, hp_i_end;
+        heaps_for_numa_node (nn, &hp_i_start, &hp_i_end);
+        return hp_i_end == hp_i_start;
+    }
+
+    static size_t heap_count()
+    {
+        // The last numa node will always use the last range of heap numbers.
+        return numa_no_to_first_heap [total_numa_nodes];
+    }
+
+    // PRE: !numa_node_is_empty(nn)
+    static heap_no_t get_nth_heap_modular_for_numa_node (const numa_no_t nn, const size_t n)
+    {
+        heap_i_i_t hp_i_start, hp_i_end;
+        heaps_for_numa_node (nn, &hp_i_start, &hp_i_end);
+        assert (hp_i_end > hp_i_start);
+        return all_heaps[hp_i_start + (n % (hp_i_end - hp_i_start))];
+    }
+
 public:
     static uint8_t* sniff_buffer;
     static unsigned n_sniff_buffers;
@@ -5328,8 +5249,7 @@ public:
     static proc_no_t heap_no_to_proc_no[MAX_SUPPORTED_CPUS];
     static numa_no_t heap_no_to_numa_node[MAX_SUPPORTED_CPUS];
     static numa_no_t proc_no_to_numa_node[MAX_SUPPORTED_CPUS];
-    //static heap_no_t numa_node_to_heap_map[MAX_SUPPORTED_CPUS+4];
-    static ranges_map numa_node_to_ranges;
+
 
     // Note this is the total numa nodes GC heaps are on. There might be
     // more on the machine if GC threads aren't using all of them.
@@ -5349,6 +5269,12 @@ public:
     }
 
 public:
+
+    static heap_no_t get_heap_modular (const size_t n)
+    {
+        return all_heaps[n % heap_count ()];
+    }
+
     static BOOL init(int n_heaps)
     {
         assert (sniff_buffer == NULL && n_sniff_buffers == 0);
@@ -5478,81 +5404,66 @@ public:
         proc_no_to_numa_node[proc_no] = numa_node;
     }
 
-    static void init_numa_node_to_ranges(int nheaps)
+    static void init_numa_node_to_heap_map(int nheaps)
     {
-        heap_count_t numa_no_to_range_counts[MAX_SUPPORTED_CPUS];
-        memset (numa_no_to_range_counts, 0, sizeof (numa_no_to_range_counts));
+        heap_count_t numa_no_to_heap_counts[MAX_SUPPORTED_CPUS];
 
+        // Now we have range counts, can get results for each
+        for (int i = 0; i < MAX_SUPPORTED_CPUS; i++)
+        {
+            all_heaps[i] = INVALID_HEAP;
+            numa_no_to_first_heap[i] = INVALID_HEAP;
+            numa_no_to_heap_counts[i] = 0;
+        }
+
+        // Compute numa_no_to_heap_counts
         for (size_t hp = 0; hp < nheaps; hp++)
         {
             const numa_no_t nn = heap_no_to_numa_node[hp];
-            assert (nn < total_numa_nodes);
-            // Only do this for the first node in each range
-            if (hp == 0 || nn != heap_no_to_numa_node[hp - 1])
-            {
-                numa_no_to_range_counts[nn]++;
-            }
+            assert (nn != NUMA_NODE_UNDEFINED);
+            // If there are gaps (e.g. numa nodes 0 and 2) -- we'll just treat the missing numa nodes as empty.
+            total_numa_nodes = max (total_numa_nodes, nn + 1);
+            numa_no_to_heap_counts[nn]++;
         }
-
-        // Now we have range counts, can get results for each
-        memset (numa_node_to_ranges.ranges, 0, sizeof(range) * MAX_SUPPORTED_CPUS);
-        memset (numa_node_to_ranges.numa_node_to_first_range, 0, sizeof(uint16_t) * MAX_SUPPORTED_CPUS);
 
         // Using <= as we will have an after-last entry to give the end of the last range.
         for (numa_no_t nn = 0, range_i = 0; nn <= total_numa_nodes; nn++)
         {
-            numa_node_to_ranges.numa_node_to_first_range[nn] = range_i;
-            range_i += numa_no_to_range_counts[nn];
+            numa_no_to_first_heap[nn] = range_i;
+            range_i += numa_no_to_heap_counts[nn];
         }
 
-        // Now write out all the ranges
+        // We'll use this to know where to place the next heap for this node
+        heap_count_t numa_no_to_n_written_heaps[MAX_SUPPORTED_CPUS];
+        memset (numa_no_to_n_written_heaps, 0, sizeof (numa_no_to_n_written_heaps));
+
+        // Now write out all the heaps
         for (heap_no_t hp = 0; hp < nheaps; hp++)
         {
             const numa_no_t nn = heap_no_to_numa_node[hp];
-            //TODO:HANDLE THIS
-            assert (nn != NUMA_NODE_UNDEFINED);
+            assert (nn != NUMA_NODE_UNDEFINED); // TODO:HANDLE THIS
             assert (nn < total_numa_nodes);
 
-            // Find the range
-            heap_no_t range_i = numa_node_to_ranges.numa_node_to_first_range[nn];
-            // first range_i of the next numa node's ranges
-            const heap_no_t last_range_i = numa_node_to_ranges.numa_node_to_first_range[nn + 1];
-            while (range_i < last_range_i && numa_node_to_ranges.ranges[range_i].is_zero ())
-            {
-                range_i++;
-                //assert (range_i < last_range_i);
-            }
-
-            if (hp != 0 && nn == heap_no_to_numa_node[hp - 1])
-            {
-                // Continuing previous range
-                assert (range_i > 0);
-                numa_node_to_ranges.ranges[range_i - 1].set_high_exclusive (hp + 1);
-            }
-            else
-            {
-                assert (range_i < last_range_i);
-                assert (numa_node_to_ranges.ranges [range_i].is_zero ());
-                numa_node_to_ranges.ranges [range_i] = range::single (hp);
-            }
+            const heap_count_t offset = numa_no_to_n_written_heaps[nn]++;
+            const heap_count_t index = numa_no_to_first_heap[nn] + offset;
+            assert (all_heaps[index] == INVALID_HEAP);
+            all_heaps[index] = hp;
         }
 
-        // Now assert we did it right: For each numa node,
+        // Check that we did it right
         heap_count_t check_count_heaps = 0;
-
         for (numa_no_t nn = 0; nn < total_numa_nodes; nn++)
         {
-            for (const range r : numa_node_to_ranges.ranges_for_numa_node (nn))
+            heap_i_i_t hp_i_start, hp_i_end;
+            heaps_for_numa_node (nn, &hp_i_start, &hp_i_end);
+            assert (numa_no_to_n_written_heaps[nn] == (hp_i_end - hp_i_start));
+            for (heap_i_i_t hp_i_i = hp_i_start; hp_i_i < hp_i_end; hp_i_i++)
             {
-                assert (!r.is_zero ());
-                for (const heap_no_t hp : r) 
-                {
-                    assert (heap_no_to_numa_node[hp] == nn);
-                    check_count_heaps++;
-                }
+                heap_no_t hp = get_heap_modular (hp_i_i);
+                assert (heap_no_to_numa_node[hp] == nn);
+                check_count_heaps++;
             }
         }
-
         assert (check_count_heaps == nheaps);
     }
 
@@ -5662,7 +5573,7 @@ public:
         heap_count_t extra_procs_per_numa_node[MAX_SUPPORTED_NODES];
         memset (extra_procs_per_numa_node, 0, sizeof (extra_procs_per_numa_node));
 
-        for (int i = gc_heap::n_heaps; i < (int)g_num_active_processors; i++)
+        for (heap_no_t i = gc_heap::n_heaps; i < g_num_active_processors; i++)
         {
             proc_no_t proc_no;
             numa_no_t node_no;
@@ -5673,60 +5584,22 @@ public:
             assert (node_no != NUMA_NODE_UNDEFINED);
 
             // Get the ith heap in this numa node.
-            if (!numa_node_to_ranges.numa_node_is_empty (i)) //TODO? This should always be non-empty?
+            if (!numa_node_is_empty (node_no)) //TODO? This should always be non-empty?
             {
                 // This is the nth extra proc on this numa node, and also increment that.
-                const heap_count_t nth_heap = extra_procs_per_numa_node[node_no]++;
-
-                const heap_no_t heap_no = numa_node_to_ranges.get_nth_heap_modular_for_numa_node (node_no, nth_heap);
+                const heap_count_t extra_index_on_numa_node = extra_procs_per_numa_node[node_no]++;
+                const heap_no_t heap_no = get_nth_heap_modular_for_numa_node (node_no, extra_index_on_numa_node);
                 proc_no_to_heap_no[proc_no] = heap_no;
                 proc_no_to_numa_node[proc_no] = node_no;
             }
         }
     }
 
-    static slice<heap_no> get_heap_range_for_heap(const int hn)
+    static void get_heap_range_for_heap(const heap_no_t hn, heap_i_i_t* hp_i_start, heap_i_i_t* hp_i_end)
     {
         const uint16_t numa_node = heap_no_to_numa_node[hn];
         assert (numa_node != NUMA_NODE_UNDEFINED); // TODO: handle this
-        return numa_node_to_ranges[numa_node];
-    }
-
-    // This gets the next valid numa node index starting at current_index+1.
-    // It assumes that current_index is a valid node index.
-    // If current_index+1 is at the end this will start at the beginning. So this will
-    // always return a valid node index, along with that node's start/end heaps.
-    static uint16_t get_next_numa_node (uint16_t current_index, int* start, int* end)
-    {
-        int start_index = current_index + 1;
-        int nheaps = gc_heap::n_heaps;
-
-        bool found_node_with_heaps_p = false;
-        do
-        {
-            int start_heap = (int)numa_node_to_heap_map[start_index];
-            int end_heap = (int)numa_node_to_heap_map[start_index + 1];
-            if (start_heap == nheaps)
-            {
-                // This is the last node.
-                start_index = 0;
-                continue;
-            }
-
-            if ((end_heap - start_heap) == 0)
-            {
-                // This node has no heaps.
-                start_index++;
-            }
-            else
-            {
-                found_node_with_heaps_p = true;
-                *start = start_heap;
-                *end = end_heap;
-            }
-        } while (!found_node_with_heaps_p);
-
-        return start_index;
+        heaps_for_numa_node (numa_node, hp_i_start, hp_i_end);
     }
 };
 uint8_t* heap_select::sniff_buffer;
@@ -5738,8 +5611,8 @@ numa_no_t heap_select::heap_no_to_numa_node[MAX_SUPPORTED_CPUS];
 numa_no_t heap_select::proc_no_to_numa_node[MAX_SUPPORTED_CPUS];
 //uint16_t heap_select::numa_node_to_heap_map[MAX_SUPPORTED_CPUS+4];
 numa_no_t heap_select::total_numa_nodes;
-ranges_map heap_select::numa_node_to_ranges;
-//node_heap_count heap_select::heaps_on_node[MAX_SUPPORTED_NODES];
+heap_no_t heap_select::all_heaps[MAX_SUPPORTED_CPUS];
+heap_no_t heap_select::numa_no_to_first_heap[MAX_SUPPORTED_CPUS];
 
 #ifdef HEAP_BALANCE_INSTRUMENTATION
 // This records info we use to look at effect of different strategies
@@ -14583,9 +14456,10 @@ void gc_heap::balance_heaps (alloc_context* acontext)
                     return;
                 }
 
-                int start, end, finish;
-                heap_select::get_heap_range_for_heap (org_hp->heap_number, &start, &end);
-                finish = start + n_heaps;
+                // NOTE: this is the index into an array of heap indices.
+                heap_i_i_t hp_i_start, hp_i_end;
+                heap_select::get_heap_range_for_heap (org_hp->heap_number, &hp_i_start, &hp_i_end);
+                const heap_i_i_t hp_i_finish = hp_i_start + n_heaps;
 
 try_again:
                 gc_heap* new_home_hp = 0;
@@ -14618,12 +14492,9 @@ try_again:
                     if (max_alloc_context_count > 1)
                         max_size /= max_alloc_context_count;
 
-                    int actual_start = start;
-                    int actual_end = (end - 1);
-
-                    for (int i = start; i < end; i++)
+                    for (heap_i_i_t hp_i_i = hp_i_start; hp_i_i < hp_i_end; hp_i_i++)
                     {
-                        gc_heap* hp = GCHeap::GetHeap (i % n_heaps)->pGenGCHeap;
+                        gc_heap* hp = GCHeap::GetHeap (heap_select::get_heap_modular (hp_i_i))->pGenGCHeap;
                         dd = hp->dynamic_data_of (0);
                         ptrdiff_t size = dd_new_allocation (dd);
 
@@ -14655,9 +14526,9 @@ try_again:
                 while (org_alloc_context_count != org_hp->alloc_context_count ||
                     max_alloc_context_count != max_hp->alloc_context_count);
 
-                if ((max_hp == org_hp) && (end < finish))
+                if ((max_hp == org_hp) && (hp_i_end < hp_i_finish))
                 {
-                    start = end; end = finish;
+                    hp_i_start = hp_i_end; hp_i_end = hp_i_finish;
                     delta = local_delta * 2; // Make it twice as hard to balance to remote nodes on NUMA.
                     goto try_again;
                 }
@@ -14743,9 +14614,9 @@ gc_heap* gc_heap::balance_heaps_loh (alloc_context* acontext, size_t alloc_size)
     const ptrdiff_t home_hp_size = home_hp->get_balance_heaps_loh_effective_budget ();
 
     size_t delta = dd_min_size (dd) / 2;
-    int start, end;
-    heap_select::get_heap_range_for_heap(home_hp_num, &start, &end);
-    const int finish = start + n_heaps;
+    heap_i_i_t hp_i_start, hp_i_end;
+    heap_select::get_heap_range_for_heap (home_hp_num, &hp_i_start, &hp_i_end);
+    const heap_i_i_t hp_i_finish = hp_i_start + n_heaps;
 
 try_again:
     gc_heap* max_hp = home_hp;
@@ -14755,9 +14626,9 @@ try_again:
         home_hp_num,
         max_size));
 
-    for (int i = start; i < end; i++)
+    for (heap_i_i_t hp_i_i = hp_i_start; hp_i_i < hp_i_end; hp_i_i++)
     {
-        gc_heap* hp = GCHeap::GetHeap(i%n_heaps)->pGenGCHeap;
+        gc_heap* hp = GCHeap::GetHeap (heap_select::get_heap_modular (hp_i_i))->pGenGCHeap;
         const ptrdiff_t size = hp->get_balance_heaps_loh_effective_budget ();
 
         dprintf (3, ("hp: %d, size: %d", hp->heap_number, size));
@@ -14771,9 +14642,9 @@ try_again:
         }
     }
 
-    if ((max_hp == home_hp) && (end < finish))
+    if ((max_hp == home_hp) && (hp_i_end < hp_i_finish))
     {
-        start = end; end = finish;
+        hp_i_start = hp_i_end; hp_i_end = hp_i_finish;
         delta = dd_min_size (dd) * 3 / 2; // Make it harder to balance to remote nodes on NUMA.
         goto try_again;
     }
@@ -14793,18 +14664,18 @@ gc_heap* gc_heap::balance_heaps_loh_hard_limit_retry (alloc_context* acontext, s
     assert (heap_hard_limit);
     const int home_heap = heap_select::select_heap(acontext);
     dprintf (3, ("[h%d] balance_heaps_loh_hard_limit_retry alloc_size: %d", home_heap, alloc_size));
-    int start, end;
-    heap_select::get_heap_range_for_heap (home_heap, &start, &end);
-    const int finish = start + n_heaps;
+    heap_i_i_t hp_i_start, hp_i_end;
+    heap_select::get_heap_range_for_heap (home_heap, &hp_i_start, &hp_i_end);
+    const heap_i_i_t hp_i_finish = hp_i_start + n_heaps;
 
     gc_heap* max_hp = nullptr;
     size_t max_end_of_seg_space = alloc_size; // Must be more than this much, or return NULL
 
 try_again:
     {
-        for (int i = start; i < end; i++)
+        for (heap_i_i_t hp_i_i = hp_i_start; hp_i_i < hp_i_end; hp_i_i++)
         {
-            gc_heap* hp = GCHeap::GetHeap (i%n_heaps)->pGenGCHeap;
+            gc_heap* hp = GCHeap::GetHeap (heap_select::get_heap_modular (hp_i_i))->pGenGCHeap;
             heap_segment* seg = generation_start_segment (hp->generation_of (max_generation + 1));
             // With a hard limit, there is only one segment.
             assert (heap_segment_next (seg) == nullptr);
@@ -14819,9 +14690,9 @@ try_again:
     }
 
     // Only switch to a remote NUMA node if we didn't find space on this one.
-    if ((max_hp == nullptr) && (end < finish))
+    if ((max_hp == nullptr) && (hp_i_end < hp_i_finish))
     {
-        start = end; end = finish;
+        hp_i_start = hp_i_end; hp_i_end = hp_i_finish;
         goto try_again;
     }
 
@@ -37034,7 +36905,7 @@ HRESULT GCHeap::Initialize()
         }
     }
 
-    heap_select::init_numa_node_to_ranges (nhp);
+    heap_select::init_numa_node_to_heap_map (nhp);
 
     // If we have more active processors than heaps we still want to initialize some of the
     // mapping for the rest of the active processors because user threads can still run on
