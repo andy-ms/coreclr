@@ -5206,7 +5206,8 @@ class heap_select
     // Has an entry for each index in 0..total_numa_nodes --
     //  including at total_numa_nodes (which is not a valid numa node number) to specify the end of the last numa node.
     static heap_no_t numa_no_to_first_heap[MAX_SUPPORTED_CPUS];
-    static_assert (MAX_SUPPORTED_CPUS < (1 << (sizeof(heap_no_t) * CHAR_BIT)), "MAX_SUPPORTED_CPUS must fit inside numa_no_t");
+    // TODO: Use CHAR_BIT instead of 8. But for some reason that wasn't building on linux.
+    static_assert (MAX_SUPPORTED_CPUS < (1 << (sizeof(heap_no_t) * 8)), "MAX_SUPPORTED_CPUS must fit inside numa_no_t");
 
     static void heaps_for_numa_node (const numa_no_t nn, heap_i_i_t* hp_i_start, heap_i_i_t* hp_i_end)
     {
