@@ -1806,11 +1806,19 @@ static void leave_spin_lock_noinstru (RAW_KEYWORD(volatile) int32_t* lock)
 #ifdef _DEBUG
 
 inline
+static ThreadAndID get_current_thread_and_id()
+{
+    EEThreadId current_thread_id;
+    current_thread_id.SetToCurrentThread ();
+    return ThreadAndID{GCToEEInterface::GetThread(), current_thread_id};
+}
+
+inline
 static void enter_spin_lock(GCSpinLock *pSpinLock)
 {
     enter_spin_lock_noinstru(&pSpinLock->lock);
-    assert (pSpinLock->holding_thread == (Thread*)-1);
-    pSpinLock->holding_thread = GCToEEInterface::GetThread();
+    assert (!VolatileLoad (&pSpinLock->holding_thread).is_valid ());
+    pSpinLock->holding_thread = get_current_thread_and_id ();
 }
 
 inline
@@ -1818,7 +1826,7 @@ static BOOL try_enter_spin_lock(GCSpinLock *pSpinLock)
 {
     BOOL ret = try_enter_spin_lock_noinstru(&pSpinLock->lock);
     if (ret)
-        pSpinLock->holding_thread = GCToEEInterface::GetThread();
+        pSpinLock->holding_thread = get_current_thread_and_id ();
     return ret;
 }
 
@@ -1828,26 +1836,41 @@ static void leave_spin_lock(GCSpinLock *pSpinLock)
     bool gc_thread_p = GCToEEInterface::WasCurrentThreadCreatedByGC();
 //    _ASSERTE((pSpinLock->holding_thread == GCToEEInterface::GetThread()) || gc_thread_p || pSpinLock->released_by_gc_p);
     pSpinLock->released_by_gc_p = gc_thread_p;
-    pSpinLock->holding_thread = (Thread*) -1;
+    pSpinLock->holding_thread = ThreadAndID{};
     if (pSpinLock->lock != -1)
         leave_spin_lock_noinstru(&pSpinLock->lock);
 }
 
 #define ASSERT_HOLDING_SPIN_LOCK(pSpinLock) \
-    _ASSERTE((pSpinLock)->holding_thread == GCToEEInterface::GetThread());
+    _ASSERTE((pSpinLock)->holding_thread == get_current_thread_and_id ());
 
 #define ASSERT_NOT_HOLDING_SPIN_LOCK(pSpinLock) \
-    _ASSERTE((pSpinLock)->holding_thread != GCToEEInterface::GetThread());
+    _ASSERTE((pSpinLock)->holding_thread.thread != GCToEEInterface::GetThread());
 
 inline
-static void ASSERT_SOME_THREAD_HOLDING_SPIN_LOCK(GCSpinLock* pSpinLock) {
-    _ASSERTE(pSpinLock->holding_thread > 0);
+static void ASSERT_SOME_BGC_THREAD_HOLDING_SPIN_LOCK(GCSpinLock* pSpinLock) {
+    _ASSERTE (VolatileLoad (&pSpinLock->holding_thread).is_valid ());
     // assert(!pSpinLock->released_by_gc_p); // Wrong, this is only set the first time it's released, not before
-    //Thread* thread = pSpinLock->holding_thread;
-    //for (gc_heap* hp : hps)
-    //    if (thread == hp->thread)
-    //        return;
-    //assert(false)
+    
+    EEThreadId locking_thread_id = VolatileLoad (&pSpinLock->holding_thread).id;
+    
+    //EEThreadId current_thread_id;
+    //current_thread_id.SetToCurrentThread ();
+
+#ifdef MULTIPLE_HEAPS
+    for (int i = 0; i < gc_heap::n_heaps; i++)
+    {
+        gc_heap* hp = gc_heap::g_heaps[i];
+#else
+        gc_heap* hp = pGenGCHeap;
+#endif
+        if (hp->bgc_thread_id == locking_thread_id)
+            return;
+#ifdef MULTIPLE_HEAPS
+    }
+#endif
+
+    assert (false);
 }
 
 #else //_DEBUG
@@ -6462,13 +6485,15 @@ void gc_heap::fix_youngest_allocation_area (const fix_allocation_contexts_kind k
     {
         case fix_allocation_contexts_kind::before_verify_heap:
         case fix_allocation_contexts_kind::before_garbage_collect:
-        case fix_allocation_contexts_kind::before_bgc_final_marking:
             heap_segment_allocated (ephemeral_heap_segment) = alloc_allocated;
+            break;
+        
+        case fix_allocation_contexts_kind::before_bgc_final_marking:
             break;
 
         case fix_allocation_contexts_kind::after_concurrent_finalization:
-            mark_entire_range (heap_segment_allocated (ephemeral_heap_segment), alloc_allocated);
-            heap_segment_allocated (ephemeral_heap_segment) = alloc_allocated;
+            // mark_entire_range (heap_segment_allocated (ephemeral_heap_segment), alloc_allocated);
+            // heap_segment_allocated (ephemeral_heap_segment) = alloc_allocated;
             // do nothing
             break;
 
@@ -12178,8 +12203,9 @@ void gc_heap::adjust_limit_clr (uint8_t* start, size_t limit_size, size_t size,
                                 alloc_context* acontext, uint32_t flags, 
                                 heap_segment* seg, int align_const, int gen_number)
 {
-    dprintf (PRINTME, (
-        "adjust_limit_clr: %Ix->%Ix(%Id), start: %Ix, limit: %Id, size: %Id",
+    dprintf (DONTPRINTME, (
+        "adjust_limit_clr: %s, %Ix->%Ix(%Id), start: %Ix, limit: %Id, size: %Id",
+        c_gc_state_to_string (current_c_gc_state),
         acontext->alloc_ptr,
         acontext->alloc_limit,
         (acontext->alloc_limit - acontext->alloc_ptr), 
@@ -12309,7 +12335,7 @@ void gc_heap::adjust_limit_clr (uint8_t* start, size_t limit_size, size_t size,
 
         if (clear_start < clear_limit)
         {
-            dprintf (PRINTME, ("clearing memory at %Ix->%Ix for %d bytes", clear_start, ( clear_limit), clear_limit - clear_start));
+            dprintf (DONTPRINTME, ("clearing memory at %Ix->%Ix for %d bytes", clear_start, ( clear_limit), clear_limit - clear_start));
             memclr(clear_start, clear_limit - clear_start);
         }
     }
@@ -12329,7 +12355,7 @@ void gc_heap::adjust_limit_clr (uint8_t* start, size_t limit_size, size_t size,
                 FATAL_GC_ERROR ();
             }
 
-            dprintf (PRINTME, ("clearing memory before used at %Ix for %Id bytes", clear_start, used - clear_start));
+            dprintf (DONTPRINTME, ("clearing memory before used at %Ix for %Id bytes", clear_start, used - clear_start));
             memclr (clear_start, used - clear_start);
         }
     }
@@ -13173,7 +13199,7 @@ void gc_heap::wait_for_background (alloc_wait_reason awr, bool loh_p)
 {
     GCSpinLock* msl = loh_p ? &more_space_lock_loh : &more_space_lock_soh;
 
-    dprintf (2, ("BGC is already in progress, waiting for it to finish"));
+    dprintf (PRINTME, ("BGC is already in progress, waiting for it to finish"));
     add_saved_spinlock_info (loh_p, me_release, mt_wait_bgc);
     leave_spin_lock (msl);
     background_gc_wait (awr);
@@ -13722,8 +13748,9 @@ BOOL gc_heap::trigger_full_compact_gc (gc_reason gr,
     if (recursive_gc_sync::background_running_p())
     {
         wait_for_background (((gr == reason_oos_soh) ? awr_gen0_oos_bgc : awr_loh_oos_bgc), loh_p);
-        dprintf (2, ("waited for BGC - done"));
+        dprintf (PRINTME, ("waited for BGC - done"));
     }
+    assert (current_c_gc_state != c_gc_state_finalizable_scanning);
 #endif //BACKGROUND_GC
 
     GCSpinLock* msl = loh_p ? &more_space_lock_loh : &more_space_lock_soh;
@@ -14226,6 +14253,9 @@ allocation_state gc_heap::try_allocate_more_space (alloc_context* acontext, size
 
             if (!settings.concurrent || (gen_number == 0))
             {
+                // TODO: don't want do do any GC during this time. Way to prevent???
+                assert (current_c_gc_state != c_gc_state_finalizable_scanning);
+
                 trigger_gc_for_alloc (0, ((gen_number == 0) ? reason_alloc_soh : reason_alloc_loh),
                                     msl, loh_p, mt_try_budget);
             }
@@ -16774,21 +16804,6 @@ void gc_heap::set_bgc_threads_sync_event ()
 #endif
 }
 
-void gc_heap::suspend_ee_after_resetting_bgc_threads_sync_event (bool set_c_gc_state)
-{
-    if (maybe_reset_bgc_threads_sync_event ())
-    {
-        suspend_EE ();
-        if (set_c_gc_state)
-        {
-            // TODO: not even sure it's necessary to change c_gc_state now that the EE is paused
-            assert (current_c_gc_state == c_gc_state_finalizable_scanning);
-            current_c_gc_state = c_gc_state_marking;
-        }
-        set_bgc_threads_sync_event ();
-    }
-}
-
 void gc_heap::restart_ee_after_resetting_bgc_threads_sync_event ()
 {
     if (maybe_reset_bgc_threads_sync_event ())
@@ -16803,6 +16818,11 @@ void gc_heap::gc1()
 {
 #ifdef BACKGROUND_GC
     assert (settings.concurrent == (uint32_t)(bgc_thread_id.IsCurrentThread()));
+    if (!settings.concurrent)
+    {
+        // Can't do another GC during finalizable scanning (why not? because that sets settings.concurrent, which the BGC needs to finish)
+        assert (current_c_gc_state != c_gc_state_finalizable_scanning);
+    }
 #endif //BACKGROUND_GC
 
 #ifdef TIME_GC
@@ -17132,7 +17152,11 @@ void gc_heap::gc1()
                 bgc_t_join.restart();
             }
 #endif //MULTIPLE_HEAPS
-            suspend_ee_after_resetting_bgc_threads_sync_event (false);
+            if (maybe_reset_bgc_threads_sync_event ())
+            {
+                suspend_EE ();
+                set_bgc_threads_sync_event ();
+            }
             //fix the allocation area so verify_heap can proceed.
             fix_allocation_contexts (fix_allocation_contexts_kind::before_verify_heap);
         }
@@ -27441,7 +27465,7 @@ void gc_heap::decommit_mark_array_by_seg (heap_segment* seg)
 void gc_heap::lock_before_concurrent_finalization()
 {
 #ifdef _DEBUG
-    ASSERT_SOME_THREAD_HOLDING_SPIN_LOCK(&gc_lock);
+    ASSERT_SOME_BGC_THREAD_HOLDING_SPIN_LOCK(&gc_lock);
 #endif
 
     // TODO: This actually has no effect
@@ -27453,7 +27477,7 @@ void gc_heap::lock_before_concurrent_finalization()
 void gc_heap::unlock_after_concurrent_finalization()
 {
 #ifdef _DEBUG
-    ASSERT_SOME_THREAD_HOLDING_SPIN_LOCK(&gc_lock);
+    ASSERT_SOME_BGC_THREAD_HOLDING_SPIN_LOCK(&gc_lock);
 #endif
 
     // TODO: This actually has no effect
@@ -27963,13 +27987,6 @@ void gc_heap::background_mark_phase ()
         // The EE remains suspended through to background_sweep(), when we set it to c_gc_state_planning.
 #endif
 
-        if (concurrent_finalization_p)
-        {
-            dprintf(PRINTME, ("Unlocking after concurrent finalization"));
-            unlock_after_concurrent_finalization ();
-            dprintf(PRINTME, ("unlocked\n"));
-        }
-
 #ifdef MULTIPLE_HEAPS
         bgc_threads_sync_event.Reset();
         dprintf(PRINTME, ("Joining BGC threads after background scanning"));
@@ -27984,7 +28001,19 @@ void gc_heap::background_mark_phase ()
         GCToOSInterface::Sleep (100);
 
         dprintf (PRINTME, ("suspending EE after concurrent finalization"));
-        suspend_ee_after_resetting_bgc_threads_sync_event (true);
+        if (maybe_reset_bgc_threads_sync_event ())
+        {
+            suspend_EE ();
+
+            // TODO: not even sure it's necessary to change c_gc_state now that the EE is paused
+            assert (current_c_gc_state == c_gc_state_finalizable_scanning);
+            current_c_gc_state = c_gc_state_marking;
+            dprintf(PRINTME, ("Unlocking after concurrent finalization"));
+            unlock_after_concurrent_finalization ();
+            dprintf(PRINTME, ("unlocked\n"));
+
+            set_bgc_threads_sync_event ();
+        }
         dprintf(PRINTME, ("EE suspended"));
 
         // All the gen0 and loh objects added since beginning of concurrent finalization must be marked.

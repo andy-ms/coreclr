@@ -315,10 +315,48 @@ void GCLog (const char *fmt, ... );
 #define ASSERT _ASSERTE
 #endif // FEATURE_REDHAWK
 
+struct ThreadAndID {
+    Thread* thread; // -1 if no thread holds the lock.
+    EEThreadId id;
+
+    ThreadAndID() : thread{(Thread*) -1}, id{} {}
+    ThreadAndID(Thread* t, EEThreadId i) : thread{t}, id{i} {}
+    ThreadAndID(const ThreadAndID& other) {
+        thread = other.thread;
+        id = other.id;
+    }
+    ThreadAndID(const volatile ThreadAndID& other) {
+        thread = other.thread;
+        // TODO: for some reason `=` fails! So using `Set`
+        id = other.id;
+    }
+
+    bool is_valid() const volatile {
+        assert (thread != nullptr);
+        return thread != ((Thread*) -1);
+    }
+
+    void operator=(const volatile ThreadAndID& other) volatile {
+        thread = other.thread;
+        id = other.id;
+    }
+    void operator=(const volatile ThreadAndID&& other) volatile {
+        thread = other.thread;
+        id = other.id;
+    }
+
+    bool operator==(const volatile ThreadAndID& other) const volatile {
+        return (thread == other.thread) && (id == other.id);
+    }
+    bool operator==(const volatile ThreadAndID&& other) const volatile {
+        return (thread == other.thread) && (id == other.id);
+    }
+};
+
 struct GCDebugSpinLock {
     VOLATILE(int32_t) lock;                   // -1 if free, 0 if held
 #ifdef _DEBUG
-    VOLATILE(Thread *) holding_thread;     // -1 if no thread holds the lock.
+    VOLATILE(ThreadAndID) holding_thread;     
     VOLATILE(BOOL) released_by_gc_p;       // a GC thread released the lock.
 #endif
 #if defined (SYNCHRONIZATION_STATS)
@@ -335,7 +373,7 @@ struct GCDebugSpinLock {
     GCDebugSpinLock()
         : lock(-1)
 #ifdef _DEBUG
-        , holding_thread((Thread*) -1)
+        , holding_thread{}
 #endif
 #if defined (SYNCHRONIZATION_STATS)
         , num_switch_thread(0), num_wait_longer(0), num_switch_thread_w(0), num_disable_preemptive_w(0)
@@ -3142,8 +3180,6 @@ protected:
     PER_HEAP
     void set_bgc_threads_sync_event ();
     PER_HEAP
-    void suspend_ee_after_resetting_bgc_threads_sync_event (bool set_c_gc_state);
-    PER_HEAP
     void restart_ee_after_resetting_bgc_threads_sync_event ();
 
     PER_HEAP
@@ -3683,6 +3719,7 @@ protected:
 
 #ifdef BACKGROUND_GC
 
+public: //TODO:KILL
     PER_HEAP
     EEThreadId bgc_thread_id;
 

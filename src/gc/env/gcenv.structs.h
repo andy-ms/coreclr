@@ -40,6 +40,26 @@ class EEThreadId
     bool m_isValid;
 
 public:
+    EEThreadId() : m_id{0}, m_isValid{false} {}
+
+    EEThreadId(const EEThreadId& other) //TODO: kill, should be subsumed by below
+        : m_id{other.m_id}, m_isValid{other.m_isValid} {}
+    EEThreadId(const volatile EEThreadId& other)
+        : m_id{other.m_id}, m_isValid{other.m_isValid} {}
+    EEThreadId(const volatile EEThreadId&& other)
+        : m_id{other.m_id}, m_isValid{other.m_isValid} {}
+
+    void operator=(const volatile EEThreadId& other) volatile {
+        m_id = other.m_id;
+        m_isValid = other.m_isValid;
+    }
+
+    bool operator==(const volatile EEThreadId& other) const volatile {
+        return m_isValid
+            ? (other.m_isValid && pthread_equal(m_id, other.m_id))
+            : !other.m_isValid;
+    }
+
     bool IsCurrentThread()
     {
         return m_isValid && pthread_equal(m_id, pthread_self());
@@ -67,6 +87,22 @@ class EEThreadId
 {
     uint64_t m_uiId;
 public:
+
+    EEThreadId() : m_uiId{0} {}
+    EEThreadId(const EEThreadId& other) //TODO: kill, should be subsumed by below
+        : m_uiId{other.m_uiId} {}
+    EEThreadId(const volatile EEThreadId& other)
+        : m_uiId{other.m_uiId} {}
+    EEThreadId(const volatile EEThreadId&& other)
+        : m_uiId{other.m_uiId} {}
+
+    void operator=(const volatile EEThreadId& other) volatile {
+        m_uiId = other.m_uiId;
+    }
+
+    bool operator==(const volatile EEThreadId& other) const volatile {
+        return m_uiId == other.m_uiId;
+    }
 
     bool IsCurrentThread()
     {
