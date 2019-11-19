@@ -80,7 +80,7 @@ enum c_gc_state
 {
     c_gc_state_marking,
     c_gc_state_planning,
-    c_gc_state_free,
+    c_gc_state_free, // means -- not in a bgc?
     c_gc_state_finalizable_scanning
 };
 

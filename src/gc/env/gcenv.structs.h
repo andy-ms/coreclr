@@ -53,8 +53,17 @@ public:
         m_id = other.m_id;
         m_isValid = other.m_isValid;
     }
+    void operator=(const volatile EEThreadId&& other) volatile {
+        m_id = other.m_id;
+        m_isValid = other.m_isValid;
+    }
 
     bool operator==(const volatile EEThreadId& other) const volatile {
+        return m_isValid
+            ? (other.m_isValid && pthread_equal(m_id, other.m_id))
+            : !other.m_isValid;
+    }
+    bool operator==(const volatile EEThreadId&& other) const volatile {
         return m_isValid
             ? (other.m_isValid && pthread_equal(m_id, other.m_id))
             : !other.m_isValid;
@@ -74,6 +83,11 @@ public:
     void Clear()
     {
         m_isValid = false;
+    }
+
+    bool IsValid() const volatile
+    {
+        return m_isValid;
     }
 };
 
@@ -99,8 +113,14 @@ public:
     void operator=(const volatile EEThreadId& other) volatile {
         m_uiId = other.m_uiId;
     }
+    void operator=(const volatile EEThreadId&& other) volatile {
+        m_uiId = other.m_uiId;
+    }
 
     bool operator==(const volatile EEThreadId& other) const volatile {
+        return m_uiId == other.m_uiId;
+    }
+    bool operator==(const volatile EEThreadId&& other) const volatile {
         return m_uiId == other.m_uiId;
     }
 
@@ -117,6 +137,11 @@ public:
     void Clear()
     {
         m_uiId = 0;
+    }
+
+    bool IsValid() const volatile
+    {
+        return m_uiId != 0;
     }
 };
 

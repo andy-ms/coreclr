@@ -1806,19 +1806,32 @@ static void leave_spin_lock_noinstru (RAW_KEYWORD(volatile) int32_t* lock)
 #ifdef _DEBUG
 
 inline
+static EEThreadId get_current_thread_id()
+{
+    EEThreadId current_thread_id;
+    current_thread_id.SetToCurrentThread ();
+    return current_thread_id;
+}
+
+/*
+inline
 static ThreadAndID get_current_thread_and_id()
 {
     EEThreadId current_thread_id;
     current_thread_id.SetToCurrentThread ();
     return ThreadAndID{GCToEEInterface::GetThread(), current_thread_id};
 }
+*/
 
 inline
 static void enter_spin_lock(GCSpinLock *pSpinLock)
 {
     enter_spin_lock_noinstru(&pSpinLock->lock);
-    assert (!VolatileLoad (&pSpinLock->holding_thread).is_valid ());
-    pSpinLock->holding_thread = get_current_thread_and_id ();
+    assert (VolatileLoad (&pSpinLock->holding_thread) == INVALID_THREAD);
+    assert (!VolatileLoad (&pSpinLock->holding_thread_id).IsValid ());
+    // pSpinLock->holding_thread = get_current_thread_and_id ();
+    pSpinLock->holding_thread = GCToEEInterface::GetThread ();
+    pSpinLock->holding_thread_id = get_current_thread_id ();
 }
 
 inline
@@ -1826,7 +1839,10 @@ static BOOL try_enter_spin_lock(GCSpinLock *pSpinLock)
 {
     BOOL ret = try_enter_spin_lock_noinstru(&pSpinLock->lock);
     if (ret)
-        pSpinLock->holding_thread = get_current_thread_and_id ();
+    {
+        pSpinLock->holding_thread = GCToEEInterface::GetThread ();
+        pSpinLock->holding_thread_id = get_current_thread_id ();
+    }
     return ret;
 }
 
@@ -1836,23 +1852,34 @@ static void leave_spin_lock(GCSpinLock *pSpinLock)
     bool gc_thread_p = GCToEEInterface::WasCurrentThreadCreatedByGC();
 //    _ASSERTE((pSpinLock->holding_thread == GCToEEInterface::GetThread()) || gc_thread_p || pSpinLock->released_by_gc_p);
     pSpinLock->released_by_gc_p = gc_thread_p;
-    pSpinLock->holding_thread = ThreadAndID{};
+    pSpinLock->holding_thread = INVALID_THREAD;
+    pSpinLock->holding_thread_id = EEThreadId{};
     if (pSpinLock->lock != -1)
         leave_spin_lock_noinstru(&pSpinLock->lock);
 }
 
-#define ASSERT_HOLDING_SPIN_LOCK(pSpinLock) \
-    _ASSERTE((pSpinLock)->holding_thread == get_current_thread_and_id ());
+inline
+static void ASSERT_HOLDING_SPIN_LOCK(GCSpinLock* pSpinLock)
+{
+    _ASSERTE(pSpinLock->holding_thread == GCToEEInterface::GetThread ());
+    _ASSERTE(pSpinLock->holding_thread_id == get_current_thread_id ());
+    // _ASSERTE((pSpinLock)->holding_thread == get_current_thread_and_id ());
+}
 
-#define ASSERT_NOT_HOLDING_SPIN_LOCK(pSpinLock) \
-    _ASSERTE((pSpinLock)->holding_thread.thread != GCToEEInterface::GetThread());
+inline
+static void ASSERT_NOT_HOLDING_SPIN_LOCK(GCSpinLock* pSpinLock)
+{
+    _ASSERTE(pSpinLock->holding_thread != GCToEEInterface::GetThread ());
+    _ASSERTE(pSpinLock->holding_thread_id == get_current_thread_id ());
+}
 
 inline
 static void ASSERT_SOME_BGC_THREAD_HOLDING_SPIN_LOCK(GCSpinLock* pSpinLock) {
-    _ASSERTE (VolatileLoad (&pSpinLock->holding_thread).is_valid ());
+    _ASSERTE (VolatileLoad (&pSpinLock->holding_thread) != INVALID_THREAD);
+    _ASSERTE (VolatileLoad (&pSpinLock->holding_thread_id).IsValid ());
     // assert(!pSpinLock->released_by_gc_p); // Wrong, this is only set the first time it's released, not before
     
-    EEThreadId locking_thread_id = VolatileLoad (&pSpinLock->holding_thread).id;
+    EEThreadId locking_thread_id = VolatileLoad (&pSpinLock->holding_thread_id);
     
     //EEThreadId current_thread_id;
     //current_thread_id.SetToCurrentThread ();
@@ -27922,6 +27949,10 @@ void gc_heap::background_mark_phase ()
 
     const bool concurrent_finalization_p = GCConfig::GetGCConcurrentFinalization();
 
+    dprintf (PRINTME, (
+        "concurrent finalization? %s",
+        bool_to_string (concurrent_finalization_p)));
+
     // Hmm. Preemptive gcs are disabled, but we hold the GC lock so they won't actually happen, right?
     assert (!GCToEEInterface::IsPreemptiveGCDisabled ());
 
@@ -28690,25 +28721,27 @@ void gc_heap::mark_absorb_new_alloc(const fix_allocation_contexts_kind kind)
     clear_gen0_bricks();
 }
 
+// WARN: return value is ignored!
 BOOL gc_heap::prepare_bgc_thread(gc_heap* gh)
 {
     BOOL success = FALSE;
     BOOL thread_created = FALSE;
-    dprintf (2, ("Preparing gc thread"));
+    dprintf (PRINTME, ("Preparing bgc thread"));
     gh->bgc_threads_timeout_cs.Enter();
     if (!(gh->bgc_thread_running))
     {
-        dprintf (2, ("GC thread not running"));
+        dprintf (PRINTME, ("BGC thread not running"));
         if ((gh->bgc_thread == 0) && create_bgc_thread(gh))
         {
             success = TRUE;
             thread_created = TRUE;
+            assert (current_c_gc_state == c_gc_state_free);
         }
     }
     else
     {
-        dprintf (3, ("GC thread already running"));
-        success = TRUE;
+        dprintf (PRINTME, ("BGC thread already running"));
+        success = TRUE; // NOTE -- success=TRUE here doesn't make sense. But return value is ignored anyway.
     }
     gh->bgc_threads_timeout_cs.Leave();
 
@@ -28918,11 +28951,11 @@ void gc_heap::bgc_thread_function()
 
     bool cooperative_mode = true;
     bgc_thread_id.SetToCurrentThread();
-    dprintf (1, ("bgc_thread_id is set to %x", (uint32_t)GCToOSInterface::GetCurrentThreadIdForLogging()));
+    dprintf (PRINTME, ("bgc_thread_id is set to %d", (uint32_t)GCToOSInterface::GetCurrentThreadIdForLogging()));
     while (1)
     {
         // Wait for work to do...
-        dprintf (3, ("bgc thread: waiting..."));
+        dprintf (PRINTME, ("bgc thread: waiting..."));
 
         cooperative_mode = enable_preemptive ();
         //current_thread->m_fPreemptiveGCDisabled = 0;
@@ -28942,7 +28975,7 @@ void gc_heap::bgc_thread_function()
 #endif //MULTIPLE_HEAPS
 #endif //_DEBUG
             FALSE);
-        dprintf (2, ("gc thread: finished waiting"));
+        dprintf (PRINTME, ("bgc thread: finished waiting"));
 
         // not calling disable_preemptive here 'cause we 
         // can't wait for GC complete here - RestartEE will be called 
@@ -29058,7 +29091,7 @@ void gc_heap::bgc_thread_function()
 
     FIRE_EVENT(GCTerminateConcurrentThread_V1);
 
-    dprintf (3, ("bgc_thread thread exiting"));
+    dprintf (PRINTME, ("bgc_thread thread exiting"));
     return;
 }
 

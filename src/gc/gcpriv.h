@@ -315,6 +315,7 @@ void GCLog (const char *fmt, ... );
 #define ASSERT _ASSERTE
 #endif // FEATURE_REDHAWK
 
+/*
 struct ThreadAndID {
     Thread* thread; // -1 if no thread holds the lock.
     EEThreadId id;
@@ -352,11 +353,17 @@ struct ThreadAndID {
         return (thread == other.thread) && (id == other.id);
     }
 };
+*/
+
+// TODO: why isn't this just nullptr?
+#define INVALID_THREAD ((Thread*) -1)
 
 struct GCDebugSpinLock {
     VOLATILE(int32_t) lock;                   // -1 if free, 0 if held
 #ifdef _DEBUG
-    VOLATILE(ThreadAndID) holding_thread;     
+    //VOLATILE(ThreadAndID) holding_thread;
+    VOLATILE(Thread*) holding_thread;
+    VOLATILE(EEThreadId) holding_thread_id;
     VOLATILE(BOOL) released_by_gc_p;       // a GC thread released the lock.
 #endif
 #if defined (SYNCHRONIZATION_STATS)
@@ -373,7 +380,7 @@ struct GCDebugSpinLock {
     GCDebugSpinLock()
         : lock(-1)
 #ifdef _DEBUG
-        , holding_thread{}
+        , holding_thread{INVALID_THREAD}, holding_thread_id{}
 #endif
 #if defined (SYNCHRONIZATION_STATS)
         , num_switch_thread(0), num_wait_longer(0), num_switch_thread_w(0), num_disable_preemptive_w(0)

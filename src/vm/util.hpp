@@ -567,8 +567,14 @@ public:
     void operator=(const volatile EEThreadId& other) volatile {
         m_FiberPtrId = other.m_FiberPtrId;
     }
+    void operator=(const volatile EEThreadId&& other) volatile {
+        m_FiberPtrId = other.m_FiberPtrId;
+    }
 
     bool operator==(const volatile EEThreadId& other) const volatile {
+        return m_FiberPtrId == other.m_FiberPtrId;
+    }
+    bool operator==(const volatile EEThreadId&& other) const volatile {
         return m_FiberPtrId == other.m_FiberPtrId;
     }
 
@@ -594,6 +600,12 @@ public:
         return m_FiberPtrId == NULL;
     }
 #endif
+
+    bool IsValid() const volatile
+    {
+        return m_FiberPtrId != nullptr;
+    }
+
     void Clear()
     {
         LIMITED_METHOD_CONTRACT;
