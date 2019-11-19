@@ -1762,7 +1762,7 @@ protected:
     PER_HEAP
     void fix_youngest_allocation_area (fix_allocation_contexts_kind kind);
     PER_HEAP
-    void fix_allocation_context (alloc_context* acontext, BOOL for_gc_p,
+    void fix_allocation_context (alloc_context* acontext, fix_allocation_contexts_kind kind,
                                  int align_const);
     PER_HEAP
     void fix_large_allocation_area ();

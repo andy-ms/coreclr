@@ -6516,7 +6516,14 @@ void gc_heap::fix_youngest_allocation_area (const fix_allocation_contexts_kind k
             break;
         
         case fix_allocation_contexts_kind::before_bgc_final_marking:
+        {
+            const bool concurrent_finalization_p = GCConfig::GetGCConcurrentFinalization();
+            if (!concurrent_finalization_p)
+            {
+                heap_segment_allocated (ephemeral_heap_segment) = alloc_allocated;
+            }
             break;
+        }
 
         case fix_allocation_contexts_kind::after_concurrent_finalization:
             // mark_entire_range (heap_segment_allocated (ephemeral_heap_segment), alloc_allocated);
@@ -6551,15 +6558,17 @@ void gc_heap::fix_large_allocation_area ()
 
 //for_gc_p indicates that the work is being done for GC,
 //as opposed to concurrent heap verification
-void gc_heap::fix_allocation_context (alloc_context* acontext, BOOL for_gc_p,
+void gc_heap::fix_allocation_context (alloc_context* acontext, const fix_allocation_contexts_kind kind,
                                       int align_const)
 {
     dprintf (PRINTME, (
-        "Fixing allocation context %Ix: ptr: %Ix, limit: %Ix, for_gc_p? %s",
+        "Fixing allocation context %Ix: ptr: %Ix, limit: %Ix, kind: %s",
         (size_t)acontext,
         (size_t)acontext->alloc_ptr,
         (size_t)acontext->alloc_limit,
-        bool_to_string (for_gc_p)));
+        fix_allocation_contexts_kind_to_string (kind)));
+
+    const bool for_gc_p = kind == fix_allocation_contexts_kind::before_garbage_collect;
 
     if (((size_t)(alloc_allocated - acontext->alloc_limit) > Align (min_obj_size, align_const)) ||
         !for_gc_p)
@@ -6632,7 +6641,7 @@ void void_allocation (gc_alloc_context* acontext, void*)
         dprintf (PRINTME, ("Void [%Ix, %Ix[", (size_t)acontext->alloc_ptr,
                      (size_t)acontext->alloc_limit+Align(min_obj_size)));
         acontext->alloc_ptr = 0;
-        acontext->alloc_limit = acontext->alloc_ptr;
+        acontext->alloc_limit = acontext->alloc_ptr; // aka = 0
     }
 }
 
@@ -6643,20 +6652,20 @@ void gc_heap::repair_allocation_contexts (BOOL repair_p)
 
 struct fix_alloc_context_args
 {
-    BOOL for_gc_p;
+    fix_allocation_contexts_kind kind;
     void* heap;
 };
 
 void fix_alloc_context (gc_alloc_context* acontext, void* param)
 {
     fix_alloc_context_args* args = (fix_alloc_context_args*)param;
-    g_theGCHeap->FixAllocContext(acontext, (void*)(size_t)(args->for_gc_p), args->heap);
+    g_theGCHeap->FixAllocContext(acontext, (void*)(size_t)(args->kind), args->heap);
 }
 
 void gc_heap::fix_allocation_contexts (const fix_allocation_contexts_kind kind)
 {
     fix_alloc_context_args args;
-    args.for_gc_p = kind == fix_allocation_contexts_kind::before_garbage_collect;
+    args.kind = kind;
     args.heap = __this;
 
     GCToEEInterface::GcEnumAllocContexts(fix_alloc_context, &args);
@@ -38167,8 +38176,9 @@ void
 GCHeap::FixAllocContext (gc_alloc_context* context, void* arg, void *heap)
 {
     alloc_context* acontext = static_cast<alloc_context*>(context);
-    const bool for_gc_p = arg != 0;
+    const fix_allocation_contexts_kind kind = static_cast<fix_allocation_contexts_kind>(reinterpret_cast<size_t>(arg));
 #ifdef MULTIPLE_HEAPS
+    const bool for_gc_p = kind == fix_allocation_contexts_kind::before_garbage_collect;
     if (for_gc_p)
         acontext->alloc_count = 0;
 
@@ -38186,7 +38196,7 @@ GCHeap::FixAllocContext (gc_alloc_context* context, void* arg, void *heap)
 
     if (heap == NULL || heap == hp)
     {
-        hp->fix_allocation_context (acontext, for_gc_p, get_alignment_constant(TRUE));
+        hp->fix_allocation_context (acontext, kind, get_alignment_constant(TRUE));
     }
 }
 
