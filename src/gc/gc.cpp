@@ -6641,13 +6641,26 @@ void void_allocation (gc_alloc_context* acontext, void*)
         dprintf (PRINTME, ("Void [%Ix, %Ix[", (size_t)acontext->alloc_ptr,
                      (size_t)acontext->alloc_limit+Align(min_obj_size)));
         acontext->alloc_ptr = 0;
-        acontext->alloc_limit = acontext->alloc_ptr; // aka = 0
+        acontext->alloc_limit = acontext->alloc_ptr; // aka, = 0
     }
 }
 
-void gc_heap::repair_allocation_contexts (BOOL repair_p)
+void gc_heap::repair_allocation_contexts (const repair_allocation_contexts_kind kind)
 {
-    GCToEEInterface::GcEnumAllocContexts (repair_p ? repair_allocation : void_allocation, NULL);
+    dprintf (PRINTME, ("repair_allocation_contexts (%s)", repair_allocation_contexts_kind_to_string (kind)));
+    enum_alloc_context_func* cb;
+    switch (kind)
+    {
+        case repair_allocation_contexts_kind::clear:
+            cb = repair_allocation;
+            break;
+        case repair_allocation_contexts_kind::void_:
+            cb = void_allocation;
+            break;
+        default:
+            assert(0);
+    }
+    GCToEEInterface::GcEnumAllocContexts (cb, NULL);
 }
 
 struct fix_alloc_context_args
@@ -7590,6 +7603,23 @@ void gc_heap::mark_array_set_marked (uint8_t* add)
 #else
     mark_array [index] |= val;
 #endif 
+}
+
+// This is for preemptively marking an entire allocation context.
+inline
+void gc_heap::mark_array_set_marked_range (uint8_t* begin, uint8_t* end) {
+    assert (current_c_gc_state == c_gc_state_finalizable_scanning);
+
+    assert (begin <= end);
+    // TODO: could be much more efficient. Use memclr?
+    // But does this need to be interlocked?
+    // NOTE: In this case we're marking our new allocation context preemptively. So should not be any other thread looking at this ...
+    for (uint8_t* ptr = begin; ptr < end; ptr++)
+    {
+        // This is new memory, shouldn't be marked
+        assert (!is_mark_bit_set (ptr));
+        mark_array_set_marked (ptr);
+    }
 }
 
 inline
@@ -14333,6 +14363,21 @@ allocation_state gc_heap::try_allocate_more_space (alloc_context* acontext, size
         }
     }
 
+    if (can_allocate)
+    {
+        assert (acontext->alloc_ptr < acontext->alloc_limit);
+
+        if (current_c_gc_state == c_gc_state_finalizable_scanning)
+        {
+            dprintf (PRINTME, ("preemptively marking %p -> %p", acontext->alloc_ptr, acontext->alloc_limit));
+            mark_array_set_marked_range (acontext->alloc_ptr, acontext->alloc_limit);
+        }
+        else
+        {
+            dprintf (DONTPRINTME, ("not in finalizable scanning, no need to mark"));
+        }
+    }
+
     return can_allocate;
 }
 
@@ -14732,7 +14777,7 @@ BOOL gc_heap::allocate_more_space(alloc_context* acontext, size_t size,
 #endif //MULTIPLE_HEAPS
     }
     while (status == a_state_retry_allocate);
-    
+
     return (status == a_state_can_allocate);
 }
 
@@ -14744,7 +14789,7 @@ CObjectHeader* gc_heap::allocate (size_t jsize, alloc_context* acontext, uint32_
     {
     retry:
         uint8_t*  result = acontext->alloc_ptr;
-        dprintf(DONTPRINTME, ("ac: %Ix->%Ix->%Ix(%Id)", acontext->alloc_ptr, (acontext->alloc_ptr + size), acontext->alloc_limit,
+        dprintf(DONTPRINTME, ("gc_heap::allocate: %Ix->%Ix->%Ix(%Id)", acontext->alloc_ptr, (acontext->alloc_ptr + size), acontext->alloc_limit,
         (acontext->alloc_limit - acontext->alloc_ptr) ));
         acontext->alloc_ptr+=size;
         if (acontext->alloc_ptr <= acontext->alloc_limit)
@@ -17224,7 +17269,7 @@ void gc_heap::gc1()
 #ifdef BACKGROUND_GC
         if (settings.concurrent)
         {
-            repair_allocation_contexts (TRUE);
+            repair_allocation_contexts (repair_allocation_contexts_kind::clear);
 
 #ifdef MULTIPLE_HEAPS
             bgc_t_join.join(this, gc_join_restart_ee_verify);
@@ -17967,7 +18012,7 @@ void gc_heap::check_and_set_no_gc_oom()
 void gc_heap::allocate_for_no_gc_after_gc()
 {
     if (current_no_gc_region_info.minimal_gc_p)
-        repair_allocation_contexts (TRUE);
+        repair_allocation_contexts (repair_allocation_contexts_kind::clear);
 
     no_gc_oom_p = false;
 
@@ -27967,13 +28012,15 @@ void gc_heap::background_mark_phase ()
 
     // We need to void alloc contexts here 'cause while background_ephemeral_sweep is running
     // we can't let the user code consume the left over parts in these alloc contexts.
-    repair_allocation_contexts (TRUE); // TRUE means: memclr instead of just voiding the alloc contexts
+    repair_allocation_contexts (repair_allocation_contexts_kind::void_);
 
     {
         if (concurrent_finalization_p)
         {
             // Every heap should reset every generation (and do it while EE is still suspended)
             reset_every_generation ();
+            // Adding this call here to ensure it only uses brand new allocation contexts.
+            // Existing allocation contexts may be overwritten.
         }
 
 #ifdef MULTIPLE_HEAPS
@@ -28034,12 +28081,12 @@ void gc_heap::background_mark_phase ()
     }
 #endif
 
+    dprintf (PRINTME, ("brb taking a nap"));
+    // Sleep for 0.1 seconds to give the EE time to do bad stuff concurrently
+    GCToOSInterface::Sleep (100);
+
     if (concurrent_finalization_p)
     {
-        dprintf (PRINTME, ("brb taking a nap"));
-        // Sleep for 1 second to give the EE time to do bad stuff concurrently
-        GCToOSInterface::Sleep (100);
-
         dprintf (PRINTME, ("suspending EE after concurrent finalization"));
         if (maybe_reset_bgc_threads_sync_event ())
         {
@@ -28168,9 +28215,10 @@ void gc_heap::background_mark_phase ()
         mark_time = finish - start;
 #endif //TIME_GC
 
+    // TODO: update comment (duplicated from elsewhere)
     // We need to void alloc contexts here 'cause while background_ephemeral_sweep is running
     // we can't let the user code consume the left over parts in these alloc contexts.
-    repair_allocation_contexts (FALSE);
+    repair_allocation_contexts (repair_allocation_contexts_kind::void_);
 
     dprintf (PRINTME, ("end of bgc mark: gen2 free list space: %d, free obj space: %d", 
         generation_free_list_space (generation_of (max_generation)), 

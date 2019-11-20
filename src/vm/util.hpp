@@ -548,17 +548,11 @@ class EEThreadId
 private:
     void *m_FiberPtrId;
 public:
-#ifdef _DEBUG
     EEThreadId()
     : m_FiberPtrId(NULL)
     {
         LIMITED_METHOD_CONTRACT;
     }
-#endif
-
-    EEThreadId(const EEThreadId& other) //TODO: kill, should be subsumed by below
-        : m_FiberPtrId{other.m_FiberPtrId} {}
-
     EEThreadId(const volatile EEThreadId& other)
         : m_FiberPtrId{other.m_FiberPtrId} {}
     EEThreadId(const volatile EEThreadId&& other)

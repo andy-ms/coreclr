@@ -1163,12 +1163,12 @@ enum class fix_allocation_contexts_kind
     before_verify_heap,
     before_garbage_collect,
     before_bgc_final_marking,
-    after_concurrent_finalization
+    after_concurrent_finalization,
 };
 
-inline const char* fix_allocation_contexts_kind_to_string (const fix_allocation_contexts_kind f)
+inline const char* fix_allocation_contexts_kind_to_string (const fix_allocation_contexts_kind kind)
 {
-    switch (f)
+    switch (kind)
     {
         case fix_allocation_contexts_kind::before_verify_heap:
             return "           before_verify_heap";
@@ -1178,6 +1178,26 @@ inline const char* fix_allocation_contexts_kind_to_string (const fix_allocation_
             return "     before_bgc_final_marking";
         case fix_allocation_contexts_kind::after_concurrent_finalization:
             return "after_concurrent_finalization";
+        default:
+            assert (false);
+            return "<error>";
+    }
+}
+
+enum class repair_allocation_contexts_kind
+{
+    clear,
+    void_,
+};
+
+inline const char* repair_allocation_contexts_kind_to_string (const repair_allocation_contexts_kind kind)
+{
+    switch (kind)
+    {
+        case repair_allocation_contexts_kind::clear:
+            return "clear";
+        case repair_allocation_contexts_kind::void_:
+            return "void_";
         default:
             assert (false);
             return "<error>";
@@ -1756,7 +1776,7 @@ protected:
     PER_HEAP_ISOLATED
     void destroy_semi_shared();
     PER_HEAP
-    void repair_allocation_contexts (BOOL repair_p);
+    void repair_allocation_contexts (repair_allocation_contexts_kind kind);
     PER_HEAP
     void fix_allocation_contexts (fix_allocation_contexts_kind kind);
     PER_HEAP
@@ -1939,6 +1959,8 @@ protected:
     unsigned int mark_array_marked (uint8_t* add);
     PER_HEAP
     void mark_array_set_marked (uint8_t* add);
+    PER_HEAP
+    void mark_array_set_marked_range (uint8_t* begin, uint8_t* end);
     PER_HEAP
     BOOL is_mark_bit_set (uint8_t* add);
     PER_HEAP
