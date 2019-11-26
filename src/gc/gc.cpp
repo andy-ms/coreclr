@@ -7596,6 +7596,8 @@ BOOL gc_heap::is_mark_bit_set (uint8_t* add)
 inline
 void gc_heap::mark_array_set_marked (uint8_t* add)
 {
+    dprintf (PRINTME, ("mark_array_set_marked %p", add));
+
     size_t index = mark_word_of (add);
     uint32_t val = (1 << mark_bit_bit_of (add));
 #ifdef MULTIPLE_HEAPS
@@ -7625,6 +7627,7 @@ void gc_heap::mark_array_set_marked_range (uint8_t* begin, uint8_t* end) {
 inline
 void gc_heap::mark_array_clear_marked (uint8_t* add)
 {
+    dprintf (PRINTME, ("mark_array_clear_marked %p", add));
     mark_array [mark_word_of (add)] &= ~(1 << mark_bit_bit_of (add));
 }
 
@@ -7650,6 +7653,12 @@ void gc_heap::clear_mark_array (uint8_t* from, uint8_t* end, BOOL check_only/*=T
 #endif // FEATURE_BASICFREEZE
                                 )
 {
+    dprintf (PRINTME, (
+        "clear_mark_array %p -> %p; check_only? %s",
+        from,
+        end,
+        bool_to_string (check_only)));
+
     if(!gc_can_use_concurrent)
         return;
 
@@ -7679,7 +7688,7 @@ void gc_heap::clear_mark_array (uint8_t* from, uint8_t* end, BOOL check_only/*=T
         //align end word to make sure to cover the address
         size_t end_word = mark_word_of (align_on_mark_word (end));
         MAYBE_UNUSED_VAR(end_word);
-        dprintf (3, ("Calling clearing mark array [%Ix, %Ix[ for addresses [%Ix, %Ix[(%s)",
+        dprintf (PRINTME, ("Calling clearing mark array [%Ix, %Ix[ for addresses [%Ix, %Ix[(%s)",
                      (size_t)mark_word_address (beg_word),
                      (size_t)mark_word_address (end_word),
                      (size_t)from, (size_t)end,
@@ -9783,7 +9792,7 @@ void gc_heap::clear_batch_mark_array_bits (uint8_t* start, uint8_t* end)
         size_t startwrd = mark_bit_word (start_mark_bit);
         size_t endwrd = mark_bit_word (end_mark_bit);
 
-        dprintf (3, ("Clearing all mark array bits between [%Ix:%Ix-[%Ix:%Ix", 
+        dprintf (PRINTME, ("clear_batch_mark_array_bits [%Ix:%Ix-[%Ix:%Ix", 
             (size_t)start, (size_t)start_mark_bit, 
             (size_t)end, (size_t)end_mark_bit));
 
@@ -9819,6 +9828,8 @@ void gc_heap::clear_batch_mark_array_bits (uint8_t* start, uint8_t* end)
 
 void gc_heap::bgc_clear_batch_mark_array_bits (uint8_t* start, uint8_t* end)
 {
+    dprintf (PRINTME, ("bgc_clear_batch_mark_array_bits %p -> %p", start, end));
+
     if ((start < background_saved_highest_address) &&
         (end > background_saved_lowest_address))
     {
@@ -9831,7 +9842,7 @@ void gc_heap::bgc_clear_batch_mark_array_bits (uint8_t* start, uint8_t* end)
 
 void gc_heap::clear_mark_array_by_objects (uint8_t* from, uint8_t* end, BOOL loh_p)
 {
-    dprintf (3, ("clearing mark array bits by objects for addr [%Ix,[%Ix", 
+    dprintf (PRINTME, ("clear_mark_array_by_objects [%Ix,[%Ix", 
                   from, end));
     int align_const = get_alignment_constant (!loh_p);
 
@@ -9843,7 +9854,7 @@ void gc_heap::clear_mark_array_by_objects (uint8_t* from, uint8_t* end, BOOL loh
 
         if (background_object_marked (o, TRUE))
         {
-            dprintf (3, ("%Ix was marked by bgc, is now cleared", o));
+            dprintf (PRINTME, ("%Ix was marked by bgc, is now cleared", o));
         }
 
         o = next_o;
@@ -10674,6 +10685,9 @@ HRESULT gc_heap::initialize_gc (size_t segment_size,
                 ));
     }
 #endif //GC_CONFIG_DRIVEN
+
+    // If this were at the top of this funciton, nothing would happen because we didn't set gc_log_on yet.
+    dprintf (PRINTME, ("INITIALIZING GARBAGE COLLECTOR"));
 
 #ifdef GC_STATS
     GCConfigStringHolder logFileName = GCConfig::GetMixLogFile();
@@ -11936,7 +11950,8 @@ void gc_heap::set_batch_mark_array_bits (uint8_t* start, uint8_t* end)
     size_t startwrd = mark_bit_word (start_mark_bit);
     size_t endwrd = mark_bit_word (end_mark_bit);
 
-    dprintf (3, ("Setting all mark array bits between [%Ix:%Ix-[%Ix:%Ix", 
+    dprintf (PRINTME, (
+        "Setting all mark array bits between [%Ix:%Ix-[%Ix:%Ix", 
         (size_t)start, (size_t)start_mark_bit, 
         (size_t)end, (size_t)end_mark_bit));
 
@@ -11991,7 +12006,7 @@ void gc_heap::check_batch_mark_array_bits (uint8_t* start, uint8_t* end)
         unsigned int wrd = firstwrd & lastwrd;
         if (mark_array[startwrd] & wrd)
         {
-            dprintf  (3, ("The %Ix portion of mark bits at 0x%Ix:0x%Ix(addr: 0x%Ix) were not cleared", 
+            dprintf  (PRINTME, ("The %Ix portion of mark bits at 0x%Ix:0x%Ix(addr: 0x%Ix) were not cleared", 
                             wrd, startwrd, 
                             mark_array [startwrd], mark_word_address (startwrd)));
             FATAL_GC_ERROR();
@@ -12004,7 +12019,7 @@ void gc_heap::check_batch_mark_array_bits (uint8_t* start, uint8_t* end)
     {
         if (mark_array[startwrd] & firstwrd)
         {
-            dprintf  (3, ("The %Ix portion of mark bits at 0x%Ix:0x%Ix(addr: 0x%Ix) were not cleared", 
+            dprintf  (PRINTME, ("The %Ix portion of mark bits at 0x%Ix:0x%Ix(addr: 0x%Ix) were not cleared", 
                             firstwrd, startwrd, 
                             mark_array [startwrd], mark_word_address (startwrd)));
             FATAL_GC_ERROR();
@@ -12017,7 +12032,7 @@ void gc_heap::check_batch_mark_array_bits (uint8_t* start, uint8_t* end)
     {
         if (mark_array[wrdtmp])
         {
-            dprintf  (3, ("The mark bits at 0x%Ix:0x%Ix(addr: 0x%Ix) were not cleared", 
+            dprintf  (PRINTME, ("check_batch_mark_array_bits: The mark bits at 0x%Ix:0x%Ix(addr: 0x%Ix) were not cleared", 
                             wrdtmp, 
                             mark_array [wrdtmp], mark_word_address (wrdtmp)));
             FATAL_GC_ERROR();
@@ -12029,7 +12044,7 @@ void gc_heap::check_batch_mark_array_bits (uint8_t* start, uint8_t* end)
     {
         if (mark_array[endwrd] & lastwrd)
         {
-            dprintf  (3, ("The %Ix portion of mark bits at 0x%Ix:0x%Ix(addr: 0x%Ix) were not cleared", 
+            dprintf  (PRINTME, ("The %Ix portion of mark bits at 0x%Ix:0x%Ix(addr: 0x%Ix) were not cleared", 
                             lastwrd, lastwrd, 
                             mark_array [lastwrd], mark_word_address (lastwrd)));
             FATAL_GC_ERROR();
@@ -14363,18 +14378,21 @@ allocation_state gc_heap::try_allocate_more_space (alloc_context* acontext, size
         }
     }
 
-    if (can_allocate)
+    if (false)
     {
-        assert (acontext->alloc_ptr < acontext->alloc_limit);
+        if (can_allocate)
+        {
+            assert (acontext->alloc_ptr < acontext->alloc_limit);
 
-        if (current_c_gc_state == c_gc_state_finalizable_scanning)
-        {
-            dprintf (PRINTME, ("preemptively marking %p -> %p", acontext->alloc_ptr, acontext->alloc_limit));
-            mark_array_set_marked_range (acontext->alloc_ptr, acontext->alloc_limit);
-        }
-        else
-        {
-            dprintf (DONTPRINTME, ("not in finalizable scanning, no need to mark"));
+            if (current_c_gc_state == c_gc_state_finalizable_scanning)
+            {
+                dprintf (PRINTME, ("preemptively marking %p -> %p", acontext->alloc_ptr, acontext->alloc_limit));
+                mark_array_set_marked_range (acontext->alloc_ptr, acontext->alloc_limit);
+            }
+            else
+            {
+                dprintf (DONTPRINTME, ("not in finalizable scanning, no need to mark"));
+            }
         }
     }
 
@@ -18426,14 +18444,21 @@ void gc_heap::garbage_collect (int n)
         dprintf (PRINTME, (
             "About to verify_heap. This is a gen %d GC, concurrent? %s",
             settings.condemned_generation,
-            bool_to_string(settings.concurrent)));
+            bool_to_string (settings.concurrent)));
 
         verify_heap (TRUE);
+
+        dprintf (PRINTME, (
+            "Verified. For gen %d GC, concurrent? %s",
+            settings.condemned_generation,
+            bool_to_string (settings.concurrent)));
     }
     if (GCConfig::GetHeapVerifyLevel() & GCConfig::HEAPVERIFY_BARRIERCHECK)
         checkGCWriteBarrier();
 
 #endif // VERIFY_HEAP
+
+    const bool started_concurrent = settings.concurrent;
 
 #ifdef BACKGROUND_GC
     if (settings.concurrent)
@@ -18442,6 +18467,8 @@ void gc_heap::garbage_collect (int n)
         assert (settings.condemned_generation == max_generation);
         settings.compaction = FALSE;
         saved_bgc_settings = settings;
+
+        dprintf (PRINTME, ("Starting BGC thread(s)"));
 
 #ifdef MULTIPLE_HEAPS
         if (heap_number == 0)
@@ -18621,9 +18648,10 @@ done:
         allocate_for_no_gc_after_gc();
 
     dprintf (PRINTME, (
-        "End of GC, gen %d, concurrent? %s",
+        "End of GC (or nonconcurrent phase of concurrent GC), gen %d, started concurrent? %s, now concurrent? %s",
         settings.condemned_generation,
-       bool_to_string(settings.concurrent)));
+        bool_to_string(started_concurrent),
+        bool_to_string(settings.concurrent)));
 }
 
 #define mark_stack_empty_p() (mark_stack_base == mark_stack_tos)
@@ -22398,6 +22426,7 @@ static uint8_t* next_object (uint8_t* o)
 inline
 void gc_heap::seg_clear_mark_bits (heap_segment* seg)
 {
+    // TODO: would this be faster if it just used memclr?
     for (uint8_t* o = heap_segment_mem (seg); o < heap_segment_allocated (seg); o = next_object (o))
     {
         if (marked (o))
@@ -27176,7 +27205,7 @@ void gc_heap::verify_mark_array_cleared (uint8_t* begin, uint8_t* end, uint32_t*
     {
         if (mark_array_addr[markw])
         {
-            dprintf  (1, ("The mark bits at 0x%Ix:0x%Ix(addr: 0x%Ix) were not cleared", 
+            dprintf  (PRINTME, ("verify_mark_array_cleared: The mark bits at 0x%Ix:0x%Ix(addr: 0x%Ix) were not cleared", 
                             markw, mark_array_addr[markw], mark_word_address (markw)));
             FATAL_GC_ERROR();
         }
@@ -28010,8 +28039,7 @@ void gc_heap::background_mark_phase ()
     // Hmm. Preemptive gcs are disabled, but we hold the GC lock so they won't actually happen, right?
     assert (!GCToEEInterface::IsPreemptiveGCDisabled ());
 
-    // We need to void alloc contexts here 'cause while background_ephemeral_sweep is running
-    // we can't let the user code consume the left over parts in these alloc contexts.
+    // TODO: could this avoid the void and just clear?
     repair_allocation_contexts (repair_allocation_contexts_kind::void_);
 
     {
@@ -28056,12 +28084,12 @@ void gc_heap::background_mark_phase ()
         //concurrent_print_time_delta ("bgc joined to mark finalization");
         concurrent_print_time_delta ("NRj");
 
-// Uncommenting these lines causes:
-// Assert failure(PID 22788 [0x00005904], Thread: 18940 [0x49fc]): dbgOnly_IsSpecialEEThread() || GCToEEInterface::GetThread() == 0 || GCToEEInterface::IsPreemptiveGCDisabled()
-//    File: C:\Users\anhans\coreclr\src\gc\gc.cpp Line: 39375
-//        finalize_queue->EnterFinalizeLock();
+        // Uncommenting these lines causes:
+        // Assert failure(PID 22788 [0x00005904], Thread: 18940 [0x49fc]): dbgOnly_IsSpecialEEThread() || GCToEEInterface::GetThread() == 0 || GCToEEInterface::IsPreemptiveGCDisabled()
+        //    File: C:\Users\anhans\coreclr\src\gc\gc.cpp Line: 39375
+        // finalize_queue->EnterFinalizeLock();
         finalize_queue->ScanForFinalization (background_promote, max_generation, __this);
-//        finalize_queue->LeaveFinalizeLock();
+        // finalize_queue->LeaveFinalizeLock();
 
         concurrent_print_time_delta ("NRF");
     }
@@ -29042,11 +29070,11 @@ void gc_heap::bgc_thread_function()
         {
             // Should join the bgc threads and terminate all of them
             // at once.
-            dprintf (1, ("GC thread timeout"));
+            dprintf (PRINTME, ("GC thread timeout"));
             bgc_threads_timeout_cs.Enter();
             if (!keep_bgc_threads_p)
             {
-                dprintf (2, ("GC thread exiting"));
+                dprintf (PRINTME, ("GC thread exiting"));
                 bgc_thread_running = FALSE;
                 bgc_thread = 0;
                 bgc_thread_id.Clear();
@@ -29057,18 +29085,18 @@ void gc_heap::bgc_thread_function()
                 break;
             else
             {
-                dprintf (3, ("GC thread needed, not exiting"));
+                dprintf (PRINTME, ("GC thread needed, not exiting"));
                 continue;
             }
         }
         // if we signal the thread with no concurrent work to do -> exit
         if (!settings.concurrent)
         {
-            dprintf (3, ("no concurrent GC needed, exiting"));
+            dprintf (PRINTME, ("no concurrent GC needed, exiting"));
             break;
         }
         recursive_gc_sync::begin_background();
-        dprintf (2, ("beginning of bgc: gen2 FL: %d, FO: %d, frag: %d", 
+        dprintf (PRINTME, ("beginning of bgc: gen2 FL: %d, FO: %d, frag: %d", 
             generation_free_list_space (generation_of (max_generation)),
             generation_free_obj_space (generation_of (max_generation)),
             dd_fragmentation (dynamic_data_of (max_generation))));
@@ -34046,8 +34074,9 @@ CObjectHeader* gc_heap::allocate_large_object (size_t jsize, uint32_t flags, int
     {
         if ((result < current_highest_address) && (result >= current_lowest_address))
         {
-            dprintf (3, ("Clearing mark bit at address %Ix",
-                     (size_t)(&mark_array [mark_word_of (result)])));
+            dprintf (PRINTME, (
+                "Clearing mark bit at address %Ix",
+                (size_t) (&mark_array [mark_word_of (result)])));
 
             mark_array_clear_marked (result);
         }
@@ -34058,12 +34087,12 @@ CObjectHeader* gc_heap::allocate_large_object (size_t jsize, uint32_t flags, int
         assert (current_c_gc_state != c_gc_state_finalizable_scanning);
         if (current_c_gc_state != c_gc_state_free)
         {
-            dprintf (3, ("Concurrent allocation of a large object %Ix",
+            dprintf (PRINTME, ("Concurrent allocation of a large object %Ix",
                         (size_t)obj));
             //mark the new block specially so we know it is a new object
             if ((result < current_highest_address) && (result >= current_lowest_address))
             {
-                dprintf (3, ("Setting mark bit at address %Ix",
+                dprintf (PRINTME, ("Setting mark bit at address %Ix",
                             (size_t)(&mark_array [mark_word_of (result)])));
     
                 mark_array_set_marked (result);
@@ -34197,6 +34226,11 @@ void gc_heap::walk_survivors_for_loh (void* profiling_context, record_surv_fn fn
 
 BOOL gc_heap::background_object_marked (uint8_t* o, BOOL clearp)
 {
+    dprintf (PRINTME, (
+        "background_object_marked %p, clearp? %s",
+        o,
+        bool_to_string(clearp)));
+
     BOOL m = FALSE;
     if ((o >= background_saved_lowest_address) && (o < background_saved_highest_address))
     {
@@ -34370,7 +34404,7 @@ void gc_heap::process_background_segment_end (heap_segment* seg,
         }
     }
 
-    dprintf (3, ("verifying seg %Ix's mark array was completely cleared", seg));
+    dprintf (PRINTME, ("verifying seg %Ix's mark array was completely cleared", seg));
     bgc_verify_mark_array_cleared (seg);
 }
 
@@ -35936,6 +35970,8 @@ void gc_heap::verify_mark_bits_cleared (uint8_t* obj, size_t s)
 
 void gc_heap::clear_all_mark_array()
 {
+    dprintf (PRINTME, ("clear_all_mark_array"));
+
 #ifdef MARK_ARRAY
     //size_t num_dwords_written = 0;
     //size_t begin_time = GetHighPrecisionTimeStamp();
@@ -36120,7 +36156,7 @@ void gc_heap::verify_mark_array_cleared (heap_segment* seg)
     {
         if (mark_array [markw])
         {
-            dprintf  (3, ("The mark bits at 0x%Ix:0x%Ix(addr: 0x%Ix) were not cleared", 
+            dprintf  (PRINTME, ("verify_mark_array_cleared: The mark bits at 0x%Ix:0x%Ix(addr: 0x%Ix) were not cleared", 
                             markw, mark_array [markw], mark_word_address (markw)));
             FATAL_GC_ERROR();
         }
@@ -36205,7 +36241,7 @@ void gc_heap::verify_seg_end_mark_array_cleared()
             {
                 if (mark_array [markw])
                 {
-                    dprintf  (3, ("The mark bits at 0x%Ix:0x%Ix(addr: 0x%Ix) were not cleared", 
+                    dprintf  (PRINTME, ("verify_seg_end_mark_array_cleared: The mark bits at 0x%Ix:0x%Ix(addr: 0x%Ix) were not cleared", 
                                     markw, mark_array [markw], mark_word_address (markw)));
                     FATAL_GC_ERROR();
                 }
